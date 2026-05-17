@@ -2,6 +2,7 @@
 package cmd
 
 import (
+	"github.com/prashant-s29/unicli/internal/setup"
 	"github.com/prashant-s29/unicli/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -19,10 +20,17 @@ Safe to re-run at any time — checks versions and skips what is already up to d
 Examples:
   unicli setup             first-time setup
   unicli setup --update    re-download latest versions of all engines`,
-
-	Run: func(cmd *cobra.Command, args []string) {
-		// M2 will replace this with internal/setup/setup.go
-		ui.Info("setup — coming in M2")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		err := setup.Run(setup.Options{
+			Update:  setupUpdate,
+			Yes:     Yes,
+			Verbose: Verbose,
+		})
+		if err != nil {
+			ui.Error("Setup failed", err.Error(), "run unicli setup again or check your internet connection")
+			return err
+		}
+		return nil
 	},
 }
 
