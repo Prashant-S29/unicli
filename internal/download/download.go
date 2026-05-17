@@ -2,11 +2,13 @@
 package download
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	dlengines "github.com/prashant-s29/unicli/internal/download/engines"
@@ -15,7 +17,6 @@ import (
 )
 
 // Request is the top-level input to the download orchestrator.
-// cmd/download.go builds this from CLI flags and calls Run().
 type Request struct {
 	URL       string
 	OutputDir string
@@ -28,33 +29,37 @@ type Request struct {
 	Verbose   bool
 }
 
+const binDir = "~/.unicli/bin"
+
 // Run is the single entry point for all download logic.
-// It detects the platform, picks an engine, runs pre-flight checks,
-// then streams the download with a live progress bar.
 func Run(req Request) error {
-	// Dry-run: show what would happen and exit
+
+	if strings.Contains(req.URL, "?") && !strings.Contains(req.URL, "&") {
+		ui.Warning("URL may be incomplete — your shell split it on '&'")
+		ui.Muted("Wrap the URL in quotes: unicli download \"<full-url>\" -o <dir>")
+		ui.Blank()
+	}
+
 	if req.DryRun {
 		PrintDryRun(req.URL, req.OutputDir)
 		return nil
 	}
 
-	// 1. Detect platform → choose engine
 	detected := Detect(req.URL)
-	engine, err := resolveEngine(detected.RecommendEngine)
+
+	if req.Verbose {
+		ui.Muted(fmt.Sprintf("platform: %d  engine: %s", detected.Platform, detected.RecommendEngine))
+	}
+
+	engine, err := resolveEngine(detected.RecommendEngine, req.Verbose)
 	if err != nil {
 		return err
 	}
 
-	if req.Verbose {
-		ui.Muted(fmt.Sprintf("engine: %s  platform: %d", engine.Name(), detected.Platform))
-	}
-
-	// 2. Pre-flight: can the engine handle this URL right now?
 	if err := engine.CanHandle(req.URL); err != nil {
 		return fmt.Errorf("pre-flight check failed: %w", err)
 	}
 
-	// 3. Build engine request
 	outputDir := req.OutputDir
 	if outputDir == "" {
 		outputDir = "."
@@ -69,7 +74,6 @@ func Run(req Request) error {
 		DryRun:    req.DryRun,
 	}
 
-	// 4. Set up context with Ctrl+C cancellation
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -82,37 +86,87 @@ func Run(req Request) error {
 		cancel()
 	}()
 
-	// 5. Choose progress renderer
 	if req.Quiet {
-		quiet := &QuietProgress{}
-		return engine.Download(ctx, engineReq, quiet.Update)
+		return engine.Download(ctx, engineReq, (&QuietProgress{}).Update)
 	}
 
-	// Live progress bar — filename and total come from the first ProgressUpdate.
-	// We also track the final filename so we can print the saved path.
+	return runWithProgressBar(ctx, engine, engineReq, outputDir)
+}
+
+// runWithProgressBar manages the progress bar lifecycle.
+//
+// The bar is created only once we have a real TotalBytes value.
+// Before that, a static "Fetching…" line is printed so the terminal
+// doesn't look frozen during yt-dlp's metadata extraction phase.
+//
+// Why not create the bar immediately on the Destination: line?
+// That line carries TotalBytes=0. An mpb bar with total=0 is in
+// indeterminate mode — it spins but shows no fill. When SetTotal is
+// called later with the real size, mpb does switch modes, but the
+// first EwmaIncrInt64 call receives a huge initial increment (all bytes
+// downloaded since the Destination line) which corrupts the EWMA
+// speed/ETA calculation. Creating the bar with the correct total from
+// the start avoids both problems.
+func runWithProgressBar(
+	ctx context.Context,
+	engine dlengines.Engine,
+	engineReq dlengines.DownloadRequest,
+	outputDir string,
+) error {
 	var pb *ProgressBar
 	var savedFilename string
+	fetchingPrinted := false
 
 	progressFn := func(u dlengines.ProgressUpdate) {
-		if pb == nil && u.Filename != "" {
-			pb = NewProgressBar(u.Filename, u.TotalBytes)
-		}
 		if u.Filename != "" {
 			savedFilename = u.Filename
 		}
-		if pb != nil {
-			pb.Update(u)
+
+		if u.Done {
+			if pb != nil {
+				pb.Update(u)
+			}
+			return
 		}
+
+		if pb == nil {
+			if u.TotalBytes > 0 {
+				// Real total known — clear the Fetching line and start the bar.
+				if fetchingPrinted {
+					fmt.Print("\r\033[K")
+				}
+				pb = NewProgressBar(savedFilename, u.TotalBytes)
+				pb.Update(u)
+			} else {
+				// No size yet — show a static placeholder.
+				if !fetchingPrinted {
+					name := truncate(savedFilename, 20)
+					if name == "" {
+						name = "…"
+					}
+					fmt.Printf("  %s  %s  %s",
+						ui.StyleMuted.Render("Fetching"),
+						ui.StyleBold.Render(name),
+						ui.StyleMuted.Render("…"),
+					)
+					fetchingPrinted = true
+				}
+			}
+			return
+		}
+
+		pb.Update(u)
 	}
 
 	if err := engine.Download(ctx, engineReq, progressFn); err != nil {
 		if pb != nil {
 			pb.Abort()
+		} else if fetchingPrinted {
+			fmt.Println()
 		}
 		return err
 	}
 
-	// Print the path to the saved file so the user knows exactly where it landed.
 	if savedFilename != "" {
 		absPath, err := filepath.Abs(filepath.Join(outputDir, savedFilename))
 		if err != nil {
@@ -124,13 +178,74 @@ func Run(req Request) error {
 	return nil
 }
 
-// resolveEngine returns the concrete Engine implementation for the given name.
-// M4 will add yt-dlp and gallery-dl here.
-func resolveEngine(name string) (dlengines.Engine, error) {
+func resolveEngine(name string, _ bool) (dlengines.Engine, error) {
+	expandedBinDir := expandHome(binDir)
+
 	switch name {
-	case mgr.EngineHTTP, "": // "" = default
+	case mgr.EngineHTTP, "":
 		return dlengines.NewHTTPEngine(), nil
+
+	case mgr.EngineYtDlp:
+		engine, _, _, err := dlengines.NewYtDlpEngine(expandedBinDir)
+		if err != nil {
+			return nil, fmt.Errorf("could not resolve yt-dlp: %w", err)
+		}
+		if engine != nil {
+			return engine, nil
+		}
+		if !promptInstall(mgr.EngineYtDlp) {
+			return nil, fmt.Errorf("yt-dlp is required — run `unicli setup` to install")
+		}
+		if err := installWithProgress(mgr.EngineYtDlp, expandedBinDir); err != nil {
+			return nil, err
+		}
+		engine, _, _, err = dlengines.NewYtDlpEngine(expandedBinDir)
+		if err != nil || engine == nil {
+			return nil, fmt.Errorf("yt-dlp install succeeded but binary not found — try `unicli setup`")
+		}
+		return engine, nil
+
 	default:
-		return nil, fmt.Errorf("unknown engine %q — is unicli setup complete?", name)
+		return nil, fmt.Errorf("unknown engine %q — run `unicli setup` to install all engines", name)
 	}
+}
+
+func promptInstall(engineName string) bool {
+	ui.Blank()
+	fmt.Printf("  %s needs %s for this download.\n",
+		ui.StyleBold.Render("unicli"),
+		ui.StyleBold.Render(engineName),
+	)
+	fmt.Printf("  Download and install it now? %s ", ui.StyleMuted.Render("[Y/n]"))
+	sc := bufio.NewScanner(os.Stdin)
+	sc.Scan()
+	answer := strings.TrimSpace(strings.ToLower(sc.Text()))
+	ui.Blank()
+	return answer == "" || answer == "y" || answer == "yes"
+}
+
+func installWithProgress(engineName, dir string) error {
+	fmt.Printf("  %s %s...\n", ui.StyleMuted.Render("Downloading"), ui.StyleBold.Render(engineName))
+	err := mgr.Install(engineName, dir, func(done, total int64) {
+		if total > 0 {
+			fmt.Printf("\r  %d%%", int(float64(done)/float64(total)*100))
+		}
+	})
+	if err != nil {
+		fmt.Println()
+		return fmt.Errorf("could not install %s: %w", engineName, err)
+	}
+	fmt.Printf("\r  %s\n\n", ui.StyleSuccess.Render("done ✓"))
+	return nil
+}
+
+func expandHome(path string) string {
+	if !strings.HasPrefix(path, "~/") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(home, path[2:])
 }
