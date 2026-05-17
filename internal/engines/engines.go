@@ -8,6 +8,7 @@ import (
 
 // Engine name constants — used everywhere an engine is referenced by name.
 const (
+	EngineHTTP      = "http"
 	EngineYtDlp     = "yt-dlp"
 	EngineGalleryDl = "gallery-dl"
 )
