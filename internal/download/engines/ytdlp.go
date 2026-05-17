@@ -58,12 +58,10 @@ func (e *ytdlpEngine) Download(ctx context.Context, req DownloadRequest, progres
 	args := e.buildArgs(req)
 	cmd := exec.CommandContext(ctx, e.binaryPath, args...)
 
-	// stdout → [download] progress lines, [info], [youtube] extraction lines
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("could not attach to yt-dlp stdout: %w", err)
 	}
-	// stderr → ERROR:/WARNING: lines only
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return fmt.Errorf("could not attach to yt-dlp stderr: %w", err)
@@ -73,7 +71,6 @@ func (e *ytdlpEngine) Download(ctx context.Context, req DownloadRequest, progres
 		return fmt.Errorf("could not start yt-dlp: %w", err)
 	}
 
-	// Collect stderr in background for error reporting
 	var stderrLines []string
 	stderrDone := make(chan struct{})
 	go func() {
@@ -84,7 +81,6 @@ func (e *ytdlpEngine) Download(ctx context.Context, req DownloadRequest, progres
 		}
 	}()
 
-	// Parse progress from stdout
 	var currentFilename string
 	sc := bufio.NewScanner(stdout)
 	for sc.Scan() {
@@ -104,14 +100,11 @@ func (e *ytdlpEngine) Download(ctx context.Context, req DownloadRequest, progres
 	<-stderrDone
 
 	if err := cmd.Wait(); err != nil {
-		errMsg := extractErrorMessage(stderrLines)
-		if errMsg == "" {
-			errMsg = err.Error()
-		}
-		return fmt.Errorf("yt-dlp failed: %s", errMsg)
+		// extractErrorMessage now returns error directly —
+		// ErrNoMedia for no-video cases, descriptive error for everything else
+		return extractErrorMessage(stderrLines, err)
 	}
 
-	// Emit final Done update
 	progress(ProgressUpdate{
 		Filename: currentFilename,
 		Done:     true,
@@ -266,9 +259,13 @@ func parseETAString(s string) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// extractErrorMessage finds the last ERROR: line from yt-dlp stderr
-// and translates known technical errors into human-readable messages.
-func extractErrorMessage(lines []string) string {
+// extractErrorMessage inspects yt-dlp stderr after a non-zero exit and returns
+// the appropriate error.
+//
+// Returns ErrNoMedia for cases where the URL is valid but contains no video —
+// the orchestrator uses this to trigger the gallery-dl fallback.
+// Returns a descriptive fmt.Errorf for all other failures.
+func extractErrorMessage(lines []string, execErr error) error {
 	raw := ""
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
@@ -285,18 +282,23 @@ func extractErrorMessage(lines []string) string {
 			}
 		}
 	}
-
-	// Translate known yt-dlp errors into actionable messages
-	switch {
-	case strings.Contains(raw, "No video could be found in this tweet"):
-		return "this tweet contains only images — image downloading from Twitter comes in the next release"
-	case strings.Contains(raw, "Unable to extract video") && strings.Contains(raw, "LinkedIn"):
-		return "this LinkedIn post contains only images, which aren't supported yet — only video posts can be downloaded"
-	case strings.Contains(raw, "Unsupported URL"):
-		return "could not find downloadable media at this URL"
+	if raw == "" {
+		return fmt.Errorf("yt-dlp failed: %w", execErr)
 	}
 
-	return raw
+	// No-media cases — return ErrNoMedia so the orchestrator can fall back
+	// to gallery-dl for image-only posts on Twitter, Instagram, Reddit, etc.
+	switch {
+	case strings.Contains(raw, "No video formats found"):
+		return ErrNoMedia
+	case strings.Contains(raw, "No video could be found"):
+		return ErrNoMedia
+	case strings.Contains(raw, "Unsupported URL"):
+		return ErrNoMedia
+	case strings.Contains(raw, "Unable to extract video") && strings.Contains(raw, "LinkedIn"):
+		return ErrNoMedia
+	}
+	return fmt.Errorf("yt-dlp failed: %s", raw)
 }
 
 // buildArgs constructs the yt-dlp argument list from a DownloadRequest.

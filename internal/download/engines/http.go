@@ -13,19 +13,14 @@ import (
 )
 
 // httpEngine downloads any direct file URL using Go's stdlib net/http.
-// It supports:
-//   - Streaming (never loads the full file into memory)
-//   - Resume via Range header if a partial file already exists
-//   - Progress reporting on every chunk
 type httpEngine struct {
 	client *http.Client
 }
 
-// NewHTTPEngine returns a ready-to-use HTTP download engine.
 func NewHTTPEngine() Engine {
 	return &httpEngine{
 		client: &http.Client{
-			Timeout: 0, // no timeout — downloads can take a long time
+			Timeout: 0,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return fmt.Errorf("too many redirects")
@@ -38,8 +33,6 @@ func NewHTTPEngine() Engine {
 
 func (e *httpEngine) Name() string { return "http" }
 
-// CanHandle does a HEAD request to verify the URL is reachable and returns
-// a file (not an HTML page). Returns nil if the URL looks downloadable.
 func (e *httpEngine) CanHandle(url string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -57,21 +50,17 @@ func (e *httpEngine) CanHandle(url string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusMethodNotAllowed {
-		// Some servers don't support HEAD — treat as reachable
 		return nil
 	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
 		return fmt.Errorf("server returned %d", resp.StatusCode)
 	}
-
 	return nil
 }
 
-// Download streams the URL to disk, reporting progress via the callback.
 func (e *httpEngine) Download(ctx context.Context, req DownloadRequest, progress ProgressFunc) error {
 	if req.DryRun {
-		filename := filenameFromURL(req.URL)
+		filename := filenameFromURL(req.URL, "")
 		progress(ProgressUpdate{Filename: filename, DoneBytes: 0, TotalBytes: -1})
 		progress(ProgressUpdate{Filename: filename, Done: true})
 		return nil
@@ -86,48 +75,53 @@ func (e *httpEngine) Download(ctx context.Context, req DownloadRequest, progress
 		return fmt.Errorf("could not create output directory: %w", err)
 	}
 
-	// First request — check size and whether resume is possible
+	// HEAD request — get size, Content-Type, Accept-Ranges, Content-Disposition
 	headReq, err := http.NewRequestWithContext(ctx, http.MethodHead, req.URL, nil)
 	if err != nil {
 		return fmt.Errorf("bad URL: %w", err)
 	}
 	headReq.Header.Set("User-Agent", "unicli")
 
-	headResp, err := e.client.Do(headReq)
+	var headResp *http.Response
+	headResp, err = e.client.Do(headReq)
 	if err == nil {
 		headResp.Body.Close()
 	}
 
-	// Determine filename
+	// Determine filename — Content-Disposition first, then URL path,
+	// then fix up missing extension from Content-Type
 	filename := ""
+	contentType := ""
 	if headResp != nil {
+		contentType = headResp.Header.Get("Content-Type")
 		filename = filenameFromResponse(headResp, req.URL)
 	}
 	if filename == "" {
-		filename = filenameFromURL(req.URL)
+		filename = filenameFromURL(req.URL, contentType)
+	} else if filepath.Ext(filename) == "" {
+		// Content-Disposition gave us a name but no extension — fix it up
+		filename = addExtFromContentType(filename, contentType)
 	}
 
 	destPath := filepath.Join(outputDir, filename)
 
-	// Check if a partial file exists — attempt resume
+	// Resume support
 	var startByte int64
 	if info, err := os.Stat(destPath); err == nil {
 		startByte = info.Size()
 	}
 
-	// Build the actual GET request
 	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, req.URL, nil)
 	if err != nil {
 		return fmt.Errorf("bad URL: %w", err)
 	}
 	getReq.Header.Set("User-Agent", "unicli")
 
-	// Add Range header if we have a partial file and the server reported accept-ranges
 	supportsRange := headResp != nil && strings.EqualFold(headResp.Header.Get("Accept-Ranges"), "bytes")
 	if startByte > 0 && supportsRange {
 		getReq.Header.Set("Range", fmt.Sprintf("bytes=%d-", startByte))
 	} else {
-		startByte = 0 // can't resume — start fresh
+		startByte = 0
 	}
 
 	resp, err := e.client.Do(getReq)
@@ -139,19 +133,31 @@ func (e *httpEngine) Download(ctx context.Context, req DownloadRequest, progress
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return fmt.Errorf("server returned %d", resp.StatusCode)
 	}
-
-	// If server ignored our Range and sent 200, restart from zero
 	if resp.StatusCode == http.StatusOK && startByte > 0 {
 		startByte = 0
 	}
 
-	// Total size: for partial content, Content-Length is the remaining bytes
+	// If HEAD failed or returned no Content-Type, get it from the GET response
+	if contentType == "" {
+		contentType = resp.Header.Get("Content-Type")
+	}
+
+	// Re-derive filename from GET response if HEAD wasn't available
+	if headResp == nil {
+		filename = filenameFromResponse(resp, req.URL)
+		if filename == "" {
+			filename = filenameFromURL(req.URL, contentType)
+		} else if filepath.Ext(filename) == "" {
+			filename = addExtFromContentType(filename, contentType)
+		}
+		destPath = filepath.Join(outputDir, filename)
+	}
+
 	totalBytes := int64(-1)
 	if resp.ContentLength > 0 {
 		totalBytes = resp.ContentLength + startByte
 	}
 
-	// Open the file — append if resuming, create/truncate otherwise
 	var file *os.File
 	if startByte > 0 {
 		file, err = os.OpenFile(destPath, os.O_APPEND|os.O_WRONLY, 0644)
@@ -163,8 +169,7 @@ func (e *httpEngine) Download(ctx context.Context, req DownloadRequest, progress
 	}
 	defer file.Close()
 
-	// Stream body → file, emitting progress on each chunk
-	buf := make([]byte, 32*1024) // 32 KB chunks
+	buf := make([]byte, 32*1024)
 	done := startByte
 	startTime := time.Now()
 
@@ -224,11 +229,71 @@ func (e *httpEngine) Download(ctx context.Context, req DownloadRequest, progress
 
 // ---- Filename helpers ----------------------------------------------------
 
-// filenameFromResponse tries Content-Disposition first, then falls back to URL.
+// contentTypeToExt maps MIME types to file extensions.
+// Only types realistically served as direct downloads are listed.
+var contentTypeToExt = map[string]string{
+	"image/jpeg":           ".jpg",
+	"image/jpg":            ".jpg",
+	"image/png":            ".png",
+	"image/gif":            ".gif",
+	"image/webp":           ".webp",
+	"image/svg+xml":        ".svg",
+	"image/bmp":            ".bmp",
+	"image/tiff":           ".tiff",
+	"image/avif":           ".avif",
+	"video/mp4":            ".mp4",
+	"video/webm":           ".webm",
+	"video/quicktime":      ".mov",
+	"video/x-matroska":     ".mkv",
+	"video/avi":            ".avi",
+	"audio/mpeg":           ".mp3",
+	"audio/mp4":            ".m4a",
+	"audio/ogg":            ".ogg",
+	"audio/flac":           ".flac",
+	"audio/wav":            ".wav",
+	"application/pdf":      ".pdf",
+	"application/zip":      ".zip",
+	"application/epub+zip": ".epub",
+}
+
+// extFromContentType returns the file extension for a Content-Type header value.
+// Strips parameters (e.g. "image/jpeg; charset=utf-8" → "image/jpeg") before lookup.
+// Returns "" if the type is unknown or is text/html (not a downloadable file).
+func extFromContentType(ct string) string {
+	if ct == "" {
+		return ""
+	}
+	// Strip parameters
+	if i := strings.Index(ct, ";"); i >= 0 {
+		ct = ct[:i]
+	}
+	ct = strings.TrimSpace(strings.ToLower(ct))
+
+	// html is never a real download target — don't give it an extension
+	if ct == "text/html" || ct == "text/plain" {
+		return ""
+	}
+	return contentTypeToExt[ct]
+}
+
+// addExtFromContentType appends the correct extension to name if one can be
+// derived from the Content-Type header and name doesn't already have one.
+func addExtFromContentType(name, contentType string) string {
+	if filepath.Ext(name) != "" {
+		return name // already has an extension
+	}
+	ext := extFromContentType(contentType)
+	if ext == "" {
+		return name // unknown type — leave as-is, don't append .unknown_video
+	}
+	return name + ext
+}
+
+// filenameFromResponse tries Content-Disposition first, then falls back.
+// The returned name has its extension fixed up from Content-Type if missing.
 func filenameFromResponse(resp *http.Response, rawURL string) string {
 	cd := resp.Header.Get("Content-Disposition")
 	if cd != "" {
-		// Parse: attachment; filename="foo.zip" or filename*=UTF-8''foo.zip
 		for _, part := range strings.Split(cd, ";") {
 			part = strings.TrimSpace(part)
 			if strings.HasPrefix(part, "filename=") {
@@ -243,13 +308,13 @@ func filenameFromResponse(resp *http.Response, rawURL string) string {
 	return ""
 }
 
-// filenameFromURL extracts the last path segment of the URL.
-func filenameFromURL(rawURL string) string {
-	// Strip query string
+// filenameFromURL extracts the last path segment and fixes up the extension
+// from contentType if the segment has none.
+func filenameFromURL(rawURL string, contentType string) string {
+	// Strip query and fragment
 	if i := strings.Index(rawURL, "?"); i >= 0 {
 		rawURL = rawURL[:i]
 	}
-	// Strip fragment
 	if i := strings.Index(rawURL, "#"); i >= 0 {
 		rawURL = rawURL[:i]
 	}
@@ -258,13 +323,13 @@ func filenameFromURL(rawURL string) string {
 		rawURL = rawURL[i+1:]
 	}
 	if rawURL == "" {
-		return "download"
+		rawURL = "download"
 	}
-	return sanitizeFilename(rawURL)
+	name := sanitizeFilename(rawURL)
+	return addExtFromContentType(name, contentType)
 }
 
-// sanitizeFilename strips characters that are illegal in filenames on
-// common operating systems.
+// sanitizeFilename strips characters illegal in filenames on common OSes.
 func sanitizeFilename(name string) string {
 	replacer := strings.NewReplacer(
 		"/", "_", "\\", "_", ":", "_", "*", "_",

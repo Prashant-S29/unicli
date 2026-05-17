@@ -4,6 +4,7 @@ package download
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -47,17 +48,18 @@ func Run(req Request) error {
 
 	detected := Detect(req.URL)
 
+	// Fail fast for known-unsupported platforms — no engine to try
+	if detected.Platform == PlatformUnsupported {
+		msg := UnsupportedMessage(req.URL)
+		if msg == "" {
+			msg = "this platform is not supported"
+		}
+		return fmt.Errorf("%s", msg)
+	}
+
 	if req.Verbose {
-		ui.Muted(fmt.Sprintf("platform: %d  engine: %s", detected.Platform, detected.RecommendEngine))
-	}
-
-	engine, err := resolveEngine(detected.RecommendEngine, req.Verbose)
-	if err != nil {
-		return err
-	}
-
-	if err := engine.CanHandle(req.URL); err != nil {
-		return fmt.Errorf("pre-flight check failed: %w", err)
+		ui.Muted(fmt.Sprintf("platform: %d  engine: %s  fallback: %s",
+			detected.Platform, detected.RecommendEngine, detected.FallbackEngine))
 	}
 
 	outputDir := req.OutputDir
@@ -86,27 +88,80 @@ func Run(req Request) error {
 		cancel()
 	}()
 
-	if req.Quiet {
-		return engine.Download(ctx, engineReq, (&QuietProgress{}).Update)
+	// --- Primary engine attempt ---
+
+	primaryEngine, err := resolveEngine(detected.RecommendEngine, req.Verbose)
+	if err != nil {
+		return err
 	}
 
+	if err := primaryEngine.CanHandle(req.URL); err != nil {
+		return fmt.Errorf("pre-flight check failed: %w", err)
+	}
+
+	primaryErr := runDownload(ctx, primaryEngine, engineReq, outputDir, req.Quiet)
+
+	// Success — done
+	if primaryErr == nil {
+		return nil
+	}
+
+	// Non-retryable error — surface it immediately
+	if !errors.Is(primaryErr, dlengines.ErrNoMedia) {
+		return primaryErr
+	}
+
+	// ErrNoMedia — try fallback engine if one exists
+	if detected.FallbackEngine == "" {
+		// No fallback registered — translate ErrNoMedia into a clear message
+		return fmt.Errorf("no downloadable media found at this URL")
+	}
+
+	if req.Verbose {
+		ui.Muted(fmt.Sprintf("%s found no media — trying %s",
+			detected.RecommendEngine, detected.FallbackEngine))
+	}
+
+	fallbackEngine, err := resolveEngine(detected.FallbackEngine, req.Verbose)
+	if err != nil {
+		// Fallback engine not available — report primary failure cleanly
+		return fmt.Errorf("no downloadable media found at this URL")
+	}
+
+	fallbackErr := runDownload(ctx, fallbackEngine, engineReq, outputDir, req.Quiet)
+
+	if fallbackErr == nil {
+		return nil
+	}
+
+	// Both engines failed — if fallback also returned ErrNoMedia, give a
+	// clean message; otherwise surface the fallback error (more specific)
+	if errors.Is(fallbackErr, dlengines.ErrNoMedia) {
+		return fmt.Errorf("no downloadable media found at this URL")
+	}
+	return fallbackErr
+}
+
+// runDownload dispatches to the quiet or progress-bar path.
+func runDownload(
+	ctx context.Context,
+	engine dlengines.Engine,
+	engineReq dlengines.DownloadRequest,
+	outputDir string,
+	quiet bool,
+) error {
+	if quiet {
+		return engine.Download(ctx, engineReq, (&QuietProgress{}).Update)
+	}
 	return runWithProgressBar(ctx, engine, engineReq, outputDir)
 }
 
 // runWithProgressBar manages the progress bar lifecycle.
 //
-// The bar is created only once we have a real TotalBytes value.
-// Before that, a static "Fetching…" line is printed so the terminal
-// doesn't look frozen during yt-dlp's metadata extraction phase.
-//
-// Why not create the bar immediately on the Destination: line?
-// That line carries TotalBytes=0. An mpb bar with total=0 is in
-// indeterminate mode — it spins but shows no fill. When SetTotal is
-// called later with the real size, mpb does switch modes, but the
-// first EwmaIncrInt64 call receives a huge initial increment (all bytes
-// downloaded since the Destination line) which corrupts the EWMA
-// speed/ETA calculation. Creating the bar with the correct total from
-// the start avoids both problems.
+// Bar creation is deferred until we know TotalBytes (byte-progress mode)
+// or the first file arrives (count mode, TotalBytes == -1).
+// This avoids the corrupted EWMA speed/ETA that results from creating
+// an mpb bar with total=0 and then hitting it with a large initial increment.
 func runWithProgressBar(
 	ctx context.Context,
 	engine dlengines.Engine,
@@ -116,6 +171,7 @@ func runWithProgressBar(
 	var pb *ProgressBar
 	var savedFilename string
 	fetchingPrinted := false
+	isCountMode := false // true once gallery-dl starts emitting per-file updates
 
 	progressFn := func(u dlengines.ProgressUpdate) {
 		if u.Filename != "" {
@@ -130,15 +186,26 @@ func runWithProgressBar(
 		}
 
 		if pb == nil {
-			if u.TotalBytes > 0 {
-				// Real total known — clear the Fetching line and start the bar.
+			switch {
+			case u.TotalBytes < 0:
+				// Count mode (gallery-dl) — create bar on first file
+				isCountMode = true
+				if fetchingPrinted {
+					fmt.Print("\r\033[K")
+				}
+				pb = NewProgressBar(savedFilename, -1)
+				pb.Update(u)
+
+			case u.TotalBytes > 0:
+				// Byte mode — real total known
 				if fetchingPrinted {
 					fmt.Print("\r\033[K")
 				}
 				pb = NewProgressBar(savedFilename, u.TotalBytes)
 				pb.Update(u)
-			} else {
-				// No size yet — show a static placeholder.
+
+			default:
+				// TotalBytes == 0 — still fetching metadata
 				if !fetchingPrinted {
 					name := truncate(savedFilename, 20)
 					if name == "" {
@@ -167,7 +234,15 @@ func runWithProgressBar(
 		return err
 	}
 
-	if savedFilename != "" {
+	if isCountMode {
+		// gallery-dl: files were already saved as they arrived —
+		// print the output directory instead of a single filename
+		absDir, err := filepath.Abs(outputDir)
+		if err != nil {
+			absDir = outputDir
+		}
+		fmt.Printf("  %s %s\n", ui.StyleLabel.Render("Saved:"), absDir)
+	} else if savedFilename != "" {
 		absPath, err := filepath.Abs(filepath.Join(outputDir, savedFilename))
 		if err != nil {
 			absPath = filepath.Join(outputDir, savedFilename)
@@ -202,6 +277,26 @@ func resolveEngine(name string, _ bool) (dlengines.Engine, error) {
 		engine, _, _, err = dlengines.NewYtDlpEngine(expandedBinDir)
 		if err != nil || engine == nil {
 			return nil, fmt.Errorf("yt-dlp install succeeded but binary not found — try `unicli setup`")
+		}
+		return engine, nil
+
+	case mgr.EngineGalleryDl:
+		engine, _, _, err := dlengines.NewGalleryDlEngine(expandedBinDir)
+		if err != nil {
+			return nil, fmt.Errorf("could not resolve gallery-dl: %w", err)
+		}
+		if engine != nil {
+			return engine, nil
+		}
+		if !promptInstall(mgr.EngineGalleryDl) {
+			return nil, fmt.Errorf("gallery-dl is required — run `unicli setup` to install")
+		}
+		if err := installWithProgress(mgr.EngineGalleryDl, expandedBinDir); err != nil {
+			return nil, err
+		}
+		engine, _, _, err = dlengines.NewGalleryDlEngine(expandedBinDir)
+		if err != nil || engine == nil {
+			return nil, fmt.Errorf("gallery-dl install succeeded but binary not found — try `unicli setup`")
 		}
 		return engine, nil
 
