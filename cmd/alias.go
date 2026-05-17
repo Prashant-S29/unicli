@@ -1,40 +1,52 @@
-/*
-Copyright © 2026 NAME HERE <EMAIL ADDRESS>
-
-*/
+// Copyright © 2026 Prashant Singh
 package cmd
 
 import (
-	"fmt"
-
+	"github.com/prashant-s29/unicli/internal/ui"
 	"github.com/spf13/cobra"
 )
 
-// aliasCmd represents the alias command
 var aliasCmd = &cobra.Command{
 	Use:   "alias",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Short: "Manage the unicli invocation alias",
+	Long: `Set a custom name for the unicli binary.
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+Examples:
+  unicli alias set dl       invoke unicli as 'dl' from now on
+  unicli alias get          show the current alias
+  unicli alias reset        remove alias, back to 'unicli' only`,
+}
+
+var aliasSetCmd = &cobra.Command{
+	Use:   "set <name>",
+	Short: "Set a custom alias for unicli",
+	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("alias called")
+		// M7 will replace this with internal/alias logic
+		ui.Info("alias set — coming in M7")
+		ui.Muted("name: " + args[0])
+	},
+}
+
+var aliasGetCmd = &cobra.Command{
+	Use:   "get",
+	Short: "Show the current alias",
+	Run: func(cmd *cobra.Command, args []string) {
+		ui.Info("alias get — coming in M7")
+	},
+}
+
+var aliasResetCmd = &cobra.Command{
+	Use:   "reset",
+	Short: "Remove alias and return to 'unicli'",
+	Run: func(cmd *cobra.Command, args []string) {
+		ui.Info("alias reset — coming in M7")
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(aliasCmd)
-
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// aliasCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// aliasCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	aliasCmd.AddCommand(aliasSetCmd)
+	aliasCmd.AddCommand(aliasGetCmd)
+	aliasCmd.AddCommand(aliasResetCmd)
 }
