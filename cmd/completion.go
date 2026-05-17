@@ -2,6 +2,7 @@
 package cmd
 
 import (
+	"github.com/prashant-s29/unicli/internal/completion"
 	"github.com/prashant-s29/unicli/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -22,33 +23,41 @@ Examples:
 var completionInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install completion script into your shell config",
-	Run: func(cmd *cobra.Command, args []string) {
-		// M6 will replace this with internal/completion logic
-		ui.Info("completion install — coming in M6")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		err := completion.Install(completion.InstallOptions{
+			Shell:   completionShell,
+			Verbose: Verbose,
+			Yes:     Yes,
+		})
+		if err != nil {
+			ui.Error("Completion install failed", err.Error(), "try running with --shell bash|zsh|fish")
+			return err
+		}
+		return nil
 	},
 }
 
 var completionBashCmd = &cobra.Command{
 	Use:   "bash",
 	Short: "Print bash completion script to stdout",
-	Run: func(cmd *cobra.Command, args []string) {
-		ui.Info("completion bash — coming in M6")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return rootCmd.GenBashCompletion(cmd.OutOrStdout())
 	},
 }
 
 var completionZshCmd = &cobra.Command{
 	Use:   "zsh",
 	Short: "Print zsh completion script to stdout",
-	Run: func(cmd *cobra.Command, args []string) {
-		ui.Info("completion zsh — coming in M6")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return rootCmd.GenZshCompletion(cmd.OutOrStdout())
 	},
 }
 
 var completionFishCmd = &cobra.Command{
 	Use:   "fish",
 	Short: "Print fish completion script to stdout",
-	Run: func(cmd *cobra.Command, args []string) {
-		ui.Info("completion fish — coming in M6")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return rootCmd.GenFishCompletion(cmd.OutOrStdout(), true)
 	},
 }
 
@@ -60,4 +69,7 @@ func init() {
 	completionCmd.AddCommand(completionFishCmd)
 
 	completionInstallCmd.Flags().StringVar(&completionShell, "shell", "", "shell to install for (bash, zsh, fish)")
+
+	// wire root command so internal/completion generators can access it
+	completion.SetRootCmd(rootCmd)
 }

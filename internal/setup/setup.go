@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/prashant-s29/unicli/internal/completion"
 	"github.com/prashant-s29/unicli/internal/config"
 	"github.com/prashant-s29/unicli/internal/engines"
 	"github.com/prashant-s29/unicli/internal/ui"
@@ -15,20 +16,12 @@ import (
 // Options controls setup behaviour — mirrors the flags available on the
 // `unicli setup` command.
 type Options struct {
-	// Update forces re-download of all engines to their latest version,
-	// even if a managed binary is already present.
-	Update bool
-
-	// Yes skips the "Press Enter to continue" prompt on first run.
-	Yes bool
-
-	// Verbose enables detailed output (passed through from the global flag).
+	Update  bool
+	Yes     bool
 	Verbose bool
 }
 
-// Run is the single entry point for all setup logic. It is called by
-// cmd/setup.go and may also be called inline by other commands when an
-// engine is missing (M4 will do this for yt-dlp).
+// Run is the single entry point for all setup logic.
 func Run(opts Options) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -38,25 +31,16 @@ func Run(opts Options) error {
 	binDir := cfg.Engines.BinDir
 	allEngines := engines.All()
 
-	// Classify the current state so we can choose the right flow.
 	missing, installed := partitionEngines(allEngines, binDir)
 
 	switch {
 	case opts.Update:
-		// --update: re-download everything regardless of current state.
 		return runUpdateFlow(allEngines, binDir, opts.Verbose)
-
 	case len(installed) == 0:
-		// Nothing at all installed — genuine first run.
-		return runFirstTimeFlow(allEngines, binDir, opts.Yes)
-
+		return runFirstTimeFlow(allEngines, binDir, opts)
 	case len(missing) > 0:
-		// Partial install (e.g. user had yt-dlp already, gallery-dl is new).
-		// Quietly install what's missing; no welcome prompt needed.
 		return runInstallMissingFlow(missing, binDir)
-
 	default:
-		// Everything present — just report status.
 		runStatusCheck(allEngines, binDir)
 		return nil
 	}
@@ -64,7 +48,7 @@ func Run(opts Options) error {
 
 // ---- First-time flow -----------------------------------------------------
 
-func runFirstTimeFlow(allEngines []engines.EngineInfo, binDir string, yes bool) error {
+func runFirstTimeFlow(allEngines []engines.EngineInfo, binDir string, opts Options) error {
 	ui.Blank()
 	fmt.Println("  Welcome to unicli!")
 	ui.Blank()
@@ -81,7 +65,7 @@ func runFirstTimeFlow(allEngines []engines.EngineInfo, binDir string, yes bool) 
 
 	ui.Blank()
 
-	if !yes {
+	if !opts.Yes {
 		fmt.Print("  Press Enter to continue, or Ctrl+C to cancel. ")
 		reader := bufio.NewReader(os.Stdin)
 		_, _ = reader.ReadString('\n')
@@ -101,6 +85,19 @@ func runFirstTimeFlow(allEngines []engines.EngineInfo, binDir string, yes bool) 
 	}
 	fmt.Println(ui.StyleSuccess.Render("done  ✓"))
 
+	// Install shell completions — best effort, never fails setup
+	fmt.Printf("  %-44s", "Installing shell completions...")
+	err := completion.Install(completion.InstallOptions{
+		Verbose: opts.Verbose,
+		Yes:     opts.Yes,
+	})
+	if err != nil {
+		fmt.Println(ui.StyleWarning.Render("skipped"))
+		ui.Muted("  " + err.Error())
+	} else {
+		fmt.Println(ui.StyleSuccess.Render("done  ✓"))
+	}
+
 	ui.Blank()
 	fmt.Printf("  All set. Run %s to get started.\n",
 		ui.StyleInfo.Render("`unicli download <url>`"))
@@ -109,11 +106,8 @@ func runFirstTimeFlow(allEngines []engines.EngineInfo, binDir string, yes bool) 
 	return nil
 }
 
-// ---- Install-missing flow (partial state) --------------------------------
+// ---- Install-missing flow ------------------------------------------------
 
-// runInstallMissingFlow installs engines that are absent without any welcome
-// prompt. This handles the case where a user already had some engines (e.g.
-// from a system package manager) and unicli just needs to fill the gaps.
 func runInstallMissingFlow(missing []engines.EngineInfo, binDir string) error {
 	ui.Blank()
 	fmt.Println("  Installing missing engines...")
@@ -157,7 +151,6 @@ func runUpdateFlow(allEngines []engines.EngineInfo, binDir string, verbose bool)
 			continue
 		}
 
-		// Either not installed, or behind — (re)install.
 		action := "Updating"
 		if installed == "" {
 			action = "Installing"
@@ -179,7 +172,7 @@ func runUpdateFlow(allEngines []engines.EngineInfo, binDir string, verbose bool)
 	return nil
 }
 
-// ---- Status-check flow (all present, no flags) ---------------------------
+// ---- Status-check flow ---------------------------------------------------
 
 func runStatusCheck(allEngines []engines.EngineInfo, binDir string) {
 	ui.Blank()
@@ -187,8 +180,6 @@ func runStatusCheck(allEngines []engines.EngineInfo, binDir string) {
 	for _, e := range allEngines {
 		version, err := engines.InstalledVersion(e.Name, binDir)
 		if err != nil || version == "" {
-			// Shouldn't reach here (partitionEngines routes missing ones away),
-			// but handle defensively.
 			fmt.Printf("  %s  %-16s %s\n",
 				ui.StyleError.Render(ui.SymbolError),
 				e.Name,
@@ -222,7 +213,6 @@ func installOne(e engines.EngineInfo, binDir string) error {
 
 	_, err := e.AssetName(goos, goarch)
 	if err != nil {
-		// Platform not supported — warn and skip, don't hard-fail setup.
 		fmt.Printf("  %-44s", fmt.Sprintf("Downloading %s for %s/%s...", e.Name, goos, goarch))
 		fmt.Println(ui.StyleWarning.Render("skipped"))
 		ui.Muted("  " + err.Error())
@@ -232,9 +222,6 @@ func installOne(e engines.EngineInfo, binDir string) error {
 	label := fmt.Sprintf("  Downloading %s for %s/%s...", e.Name, goos, goarch)
 	fmt.Printf("%-44s", label)
 
-	// progress callback is a no-op for setup — engines.Install calls it during
-	// the download but setup output is intentionally plain text, not a live bar.
-	// mpb progress bars come in M3 with the download command.
 	progress := func(done, total int64) { _, _ = done, total }
 
 	if err := engines.Install(e.Name, binDir, progress); err != nil {
@@ -243,8 +230,6 @@ func installOne(e engines.EngineInfo, binDir string) error {
 	}
 
 	fmt.Println(ui.StyleSuccess.Render("done  ✓"))
-
-	// Checksum line — engines.Install already verified; just confirm to user.
 	fmt.Printf("  %-44s", "Verifying checksum...")
 	fmt.Println(ui.StyleSuccess.Render("done  ✓"))
 
@@ -253,8 +238,6 @@ func installOne(e engines.EngineInfo, binDir string) error {
 
 // ---- Helpers -------------------------------------------------------------
 
-// partitionEngines splits the engine list into missing and installed buckets.
-// "installed" means a managed binary exists in binDir (not just on $PATH).
 func partitionEngines(allEngines []engines.EngineInfo, binDir string) (missing, installed []engines.EngineInfo) {
 	for _, e := range allEngines {
 		_, managed, err := engines.Resolve(e.Name, binDir)
@@ -267,8 +250,6 @@ func partitionEngines(allEngines []engines.EngineInfo, binDir string) (missing, 
 	return
 }
 
-// stripV removes a leading "v" from version strings for comparison.
-// e.g. "v2024.11.18" == "2024.11.18"
 func stripV(v string) string {
 	return strings.TrimPrefix(v, "v")
 }
