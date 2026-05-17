@@ -17,21 +17,31 @@ type ProgressBar struct {
 	container *mpb.Progress
 	bar       *mpb.Bar
 	filename  string
+	lastDone  int64
 }
 
 // NewProgressBar initialises the mpb container and returns a ProgressBar ready
 // to receive ProgressUpdate values. Call Done() after the download finishes.
+//
+// Pass total = -1 when the size is unknown — the bar renders as a spinner/scroller
+// until SetTotal is called with the real value.
 func NewProgressBar(filename string, total int64) *ProgressBar {
 	p := mpb.New(
-		mpb.WithWidth(60),
+		mpb.WithWidth(50),
 		mpb.WithRefreshRate(120*time.Millisecond),
 	)
 
-	// Prepend: "  Downloading  filename.ext"
 	nameWidth := 20
 	label := truncate(filename, nameWidth)
 
-	bar := p.New(total,
+	// Use 0 as the initial total so mpb doesn't choke on -1.
+	// We'll call SetTotal as soon as we get a real value.
+	initTotal := int64(0)
+	if total > 0 {
+		initTotal = total
+	}
+
+	bar := p.New(initTotal,
 		mpb.BarStyle().
 			Lbound(" ").
 			Filler(ui.StyleInfo.Render("█")).
@@ -74,26 +84,33 @@ func NewProgressBar(filename string, total int64) *ProgressBar {
 // Must be called from a single goroutine.
 func (pb *ProgressBar) Update(u engines.ProgressUpdate) {
 	if u.Done {
+		// Snap the bar to 100 % and wait for the render loop to finish.
 		pb.bar.SetTotal(u.DoneBytes, true)
 		pb.container.Wait()
 		return
 	}
 
-	// On first update we may now know the filename and total
-	if u.Filename != pb.filename && u.Filename != "" {
-		pb.filename = u.Filename
-		// Note: mpb doesn't support relabelling after creation, so the
-		// initial label stands. In practice filename is known on the first
-		// update for HTTP downloads.
-	}
-
+	// Update total as soon as we know it.
 	if u.TotalBytes > 0 {
 		pb.bar.SetTotal(u.TotalBytes, false)
 	}
 
-	increment := u.DoneBytes - pb.bar.Current()
+	// How many new bytes arrived since the last update?
+	increment := u.DoneBytes - pb.lastDone
 	if increment > 0 {
-		pb.bar.EwmaIncrInt64(increment, time.Duration(float64(time.Second)/u.Speed+1))
+		pb.lastDone = u.DoneBytes
+
+		// EwmaIncrInt64 needs a meaningful elapsed duration per increment.
+		// Guard against zero / negative speed to avoid divide-by-zero or
+		// nonsense durations.
+		var elapsed time.Duration
+		if u.Speed > 0 {
+			elapsed = time.Duration(float64(time.Second) * float64(increment) / u.Speed)
+		} else {
+			elapsed = 100 * time.Millisecond // safe fallback
+		}
+
+		pb.bar.EwmaIncrInt64(increment, elapsed)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	dlengines "github.com/prashant-s29/unicli/internal/download/engines"
@@ -39,7 +40,6 @@ func Run(req Request) error {
 
 	// 1. Detect platform → choose engine
 	detected := Detect(req.URL)
-
 	engine, err := resolveEngine(detected.RecommendEngine)
 	if err != nil {
 		return err
@@ -55,9 +55,13 @@ func Run(req Request) error {
 	}
 
 	// 3. Build engine request
+	outputDir := req.OutputDir
+	if outputDir == "" {
+		outputDir = "."
+	}
 	engineReq := dlengines.DownloadRequest{
 		URL:       req.URL,
-		OutputDir: req.OutputDir,
+		OutputDir: outputDir,
 		Format:    req.Format,
 		Quality:   req.Quality,
 		AudioOnly: req.AudioOnly,
@@ -84,13 +88,17 @@ func Run(req Request) error {
 		return engine.Download(ctx, engineReq, quiet.Update)
 	}
 
-	// Live progress bar — filename and total come from the first ProgressUpdate
+	// Live progress bar — filename and total come from the first ProgressUpdate.
+	// We also track the final filename so we can print the saved path.
 	var pb *ProgressBar
+	var savedFilename string
 
 	progressFn := func(u dlengines.ProgressUpdate) {
 		if pb == nil && u.Filename != "" {
-			// Initialise bar on first update that carries a filename
 			pb = NewProgressBar(u.Filename, u.TotalBytes)
+		}
+		if u.Filename != "" {
+			savedFilename = u.Filename
 		}
 		if pb != nil {
 			pb.Update(u)
@@ -102,6 +110,15 @@ func Run(req Request) error {
 			pb.Abort()
 		}
 		return err
+	}
+
+	// Print the path to the saved file so the user knows exactly where it landed.
+	if savedFilename != "" {
+		absPath, err := filepath.Abs(filepath.Join(outputDir, savedFilename))
+		if err != nil {
+			absPath = filepath.Join(outputDir, savedFilename)
+		}
+		fmt.Printf("  %s %s\n", ui.StyleLabel.Render("Saved:"), absPath)
 	}
 
 	return nil
