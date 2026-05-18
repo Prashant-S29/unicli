@@ -18,12 +18,13 @@
 8. [Autocomplete](#8-autocomplete)
 9. [Configuration](#9-configuration)
 10. [Alias System](#10-alias-system)
-11. [Image Module](#11-image-module) — Coming Soon
-12. [Video Module](#12-video-module) — Coming Soon
-13. [Audio Module](#13-audio-module) — Coming Soon
-14. [PDF Module](#14-pdf-module) — Coming Soon
-15. [Error Handling](#15-error-handling)
-16. [Distribution](#16-distribution)
+11. [Selfkill](#11-selfkill)
+12. [Image Module](#11-image-module) — Coming Soon
+13. [Video Module](#12-video-module) — Coming Soon
+14. [Audio Module](#13-audio-module) — Coming Soon
+15. [PDF Module](#14-pdf-module) — Coming Soon
+16. [Error Handling](#15-error-handling)
+17. [Distribution](#16-distribution)
 
 ---
 
@@ -561,7 +562,49 @@ The binary inspects `os.Args[0]` at startup — it works correctly regardless of
 
 ---
 
-## 11. Image Module
+
+## 11. Selfkill
+
+`unicli selfkill` removes everything unicli wrote to the machine during setup. It is the clean uninstall path.
+
+### Command interface
+
+```bash
+unicli selfkill          # prompts for confirmation
+unicli selfkill --yes    # skips confirmation prompt
+```
+
+### What gets removed
+
+| Item | Path |
+|---|---|
+| Engine binaries + config | `~/.unicli/` (entire directory) |
+| zsh completion script | `~/.zsh/completions/_unicli` |
+| bash completion script | `~/.local/share/bash-completion/completions/unicli` |
+| fish completion script | `~/.config/fish/completions/unicli.fish` |
+| zshrc block | `# unicli shell completion` block in `~/.zshrc` |
+| Alias symlink | `<binary dir>/<alias>` (if an alias was set) |
+| Alias completion scripts | Same paths as above but for the alias name |
+
+### What does NOT get removed
+
+The `unicli` binary itself is not removed — a running process cannot reliably delete itself cross-platform. Instead, selfkill prints the exact command to run as its final step:
+
+```
+  One last step — remove the unicli binary itself:
+
+    sudo rm /usr/local/bin/unicli
+```
+### Implementation
+
+- Reads the alias name from `~/.unicli/config.yaml` before deleting the directory
+- Shell detection is not needed — selfkill always cleans up all three shell locations regardless of which shell is active
+- `$SHELL` is intentionally not consulted here; unlike setup, teardown should be exhaustive
+
+
+---
+
+## 12. Image Module
 
 > **Coming Soon.** Architecture will be defined before implementation begins.
 >
@@ -570,7 +613,7 @@ The binary inspects `os.Args[0]` at startup — it works correctly regardless of
 
 ---
 
-## 12. Video Module
+## 13. Video Module
 
 > **Coming Soon.** Architecture will be defined before implementation begins.
 >
@@ -579,7 +622,7 @@ The binary inspects `os.Args[0]` at startup — it works correctly regardless of
 
 ---
 
-## 13. Audio Module
+## 14. Audio Module
 
 > **Coming Soon.** Architecture will be defined before implementation begins.
 >
@@ -588,7 +631,7 @@ The binary inspects `os.Args[0]` at startup — it works correctly regardless of
 
 ---
 
-## 14. PDF Module
+## 15. PDF Module
 
 > **Coming Soon.** Architecture will be defined before implementation begins.
 >
@@ -597,7 +640,7 @@ The binary inspects `os.Args[0]` at startup — it works correctly regardless of
 
 ---
 
-## 15. Error Handling
+## 16. Error Handling
 
 All errors follow a consistent format in the terminal:
 
@@ -623,7 +666,7 @@ Exit codes:
 
 ---
 
-## 16. Distribution
+## 17. Distribution
 
 Built with `goreleaser`. One `goreleaser release` command produces:
 

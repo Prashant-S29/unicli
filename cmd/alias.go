@@ -2,6 +2,9 @@
 package cmd
 
 import (
+	"fmt"
+
+	"github.com/prashant-s29/unicli/internal/alias"
 	"github.com/prashant-s29/unicli/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -21,26 +24,40 @@ var aliasSetCmd = &cobra.Command{
 	Use:   "set <name>",
 	Short: "Set a custom alias for unicli",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		// M7 will replace this with internal/alias logic
-		ui.Info("alias set — coming in M7")
-		ui.Muted("name: " + args[0])
+	RunE: func(cmd *cobra.Command, args []string) error {
+		err := alias.Set(args[0])
+		if err != nil {
+			ui.Error("Failed to set alias", err.Error(), "make sure you have write permission to the binary directory")
+			return err
+		}
+		return nil
 	},
 }
 
 var aliasGetCmd = &cobra.Command{
 	Use:   "get",
 	Short: "Show the current alias",
-	Run: func(cmd *cobra.Command, args []string) {
-		ui.Info("alias get — coming in M7")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name, err := alias.Get()
+		if err != nil {
+			ui.Error("Failed to get alias", err.Error(), "run unicli setup to initialise config")
+			return err
+		}
+		fmt.Println(name)
+		return nil
 	},
 }
 
 var aliasResetCmd = &cobra.Command{
 	Use:   "reset",
 	Short: "Remove alias and return to 'unicli'",
-	Run: func(cmd *cobra.Command, args []string) {
-		ui.Info("alias reset — coming in M7")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		err := alias.Reset()
+		if err != nil {
+			ui.Error("Failed to reset alias", err.Error(), "try removing the symlink manually from the binary directory")
+			return err
+		}
+		return nil
 	},
 }
 

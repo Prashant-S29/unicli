@@ -3,6 +3,7 @@ package cmd
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
@@ -16,7 +17,7 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "unicli",
+	Use:   binaryName(),
 	Short: "A fast, modular CLI for downloading and transforming media",
 	Long: `unicli - one tool for everything.
 
@@ -47,4 +48,14 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&Quiet, "quiet", "q", false, "suppress output except errors")
 	rootCmd.PersistentFlags().BoolVar(&DryRun, "dry-run", false, "show what would happen without executing")
 	rootCmd.PersistentFlags().BoolVarP(&Yes, "yes", "y", false, "skip confirmation prompts")
+}
+
+// binaryName returns the name the binary was invoked as.
+// If the user has set an alias (e.g. "dl"), os.Args[0] will be "dl"
+// and Cobra will use that name in help text and usage output.
+func binaryName() string {
+	if len(os.Args) == 0 {
+		return "unicli"
+	}
+	return filepath.Base(os.Args[0])
 }

@@ -20,10 +20,16 @@ type InstallOptions struct {
 // Install detects (or uses the provided) shell and installs the completion
 // script to the correct location for that shell. Safe to call multiple times.
 func Install(opts InstallOptions) error {
+	return InstallForName("unicli", opts)
+}
+
+// InstallForName installs completion scripts for an arbitrary binary name.
+// Used by the alias system to generate completions for the alias name.
+func InstallForName(name string, opts InstallOptions) error {
 	shell := opts.Shell
 
 	if shell == "" {
-		shell = detectShell()
+		shell = DetectShell()
 		if shell == "" {
 			return fmt.Errorf("could not detect shell — use --shell bash|zsh|fish to specify")
 		}
@@ -36,34 +42,33 @@ func Install(opts InstallOptions) error {
 
 	switch shell {
 	case "zsh":
-		return installZsh(opts)
+		return installZshForName(name, opts)
 	case "bash":
-		return installBash(opts)
+		return installBashForName(name, opts)
 	case "fish":
-		return installFish(opts)
+		return installFishForName(name, opts)
 	default:
 		return fmt.Errorf("unsupported shell %q — supported: bash, zsh, fish", shell)
 	}
 }
 
-// installZsh writes _unicli to ~/.zsh/completions/ and ensures
-// fpath and compinit are set in ~/.zshrc — only adds what is missing.
-func installZsh(opts InstallOptions) error {
+// installZshForName writes _<name> to ~/.zsh/completions/ and ensures
+// fpath and compinit are present in ~/.zshrc.
+func installZshForName(name string, opts InstallOptions) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("could not resolve home directory: %w", err)
 	}
 
-	// 1. Write completion file
 	compDir := filepath.Join(home, ".zsh", "completions")
-	compFile := filepath.Join(compDir, "_unicli")
+	compFile := filepath.Join(compDir, "_"+name)
 
 	if err := os.MkdirAll(compDir, 0o755); err != nil {
 		return fmt.Errorf("could not create %s: %w", compDir, err)
 	}
 
 	var buf bytes.Buffer
-	if err := generateZsh(&buf); err != nil {
+	if err := generateZshForName(name, &buf); err != nil {
 		return fmt.Errorf("could not generate zsh completion script: %w", err)
 	}
 
@@ -75,7 +80,6 @@ func installZsh(opts InstallOptions) error {
 		ui.Info("Wrote " + compFile)
 	}
 
-	// 2. Patch ~/.zshrc — add fpath and compinit only if not already present
 	zshrc := filepath.Join(home, ".zshrc")
 	existing, err := os.ReadFile(zshrc)
 	if err != nil && !os.IsNotExist(err) {
@@ -113,24 +117,23 @@ func installZsh(opts InstallOptions) error {
 	return nil
 }
 
-// installBash writes the completion script to
-// ~/.local/share/bash-completion/completions/unicli
-// This directory is auto-loaded by bash-completion v2 with zero rc edits.
-func installBash(opts InstallOptions) error {
+// installBashForName writes the completion script to
+// ~/.local/share/bash-completion/completions/<name>
+func installBashForName(name string, opts InstallOptions) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("could not resolve home directory: %w", err)
 	}
 
 	compDir := filepath.Join(home, ".local", "share", "bash-completion", "completions")
-	compFile := filepath.Join(compDir, "unicli")
+	compFile := filepath.Join(compDir, name)
 
 	if err := os.MkdirAll(compDir, 0o755); err != nil {
 		return fmt.Errorf("could not create %s: %w", compDir, err)
 	}
 
 	var buf bytes.Buffer
-	if err := generateBash(&buf); err != nil {
+	if err := generateBashForName(name, &buf); err != nil {
 		return fmt.Errorf("could not generate bash completion script: %w", err)
 	}
 
@@ -138,29 +141,32 @@ func installBash(opts InstallOptions) error {
 		return fmt.Errorf("could not write %s: %w", compFile, err)
 	}
 
+	if opts.Verbose {
+		ui.Info("Wrote " + compFile)
+	}
+
 	ui.Success("Completion installed for bash")
 	ui.Info("Restart your shell or run:  source " + compFile)
 	return nil
 }
 
-// installFish writes the completion script to
-// ~/.config/fish/completions/unicli.fish
-// Fish loads this directory automatically — no config edits needed.
-func installFish(opts InstallOptions) error {
+// installFishForName writes the completion script to
+// ~/.config/fish/completions/<name>.fish
+func installFishForName(name string, opts InstallOptions) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("could not resolve home directory: %w", err)
 	}
 
 	compDir := filepath.Join(home, ".config", "fish", "completions")
-	compFile := filepath.Join(compDir, "unicli.fish")
+	compFile := filepath.Join(compDir, name+".fish")
 
 	if err := os.MkdirAll(compDir, 0o755); err != nil {
 		return fmt.Errorf("could not create %s: %w", compDir, err)
 	}
 
 	var buf bytes.Buffer
-	if err := generateFish(&buf); err != nil {
+	if err := generateFishForName(name, &buf); err != nil {
 		return fmt.Errorf("could not generate fish completion script: %w", err)
 	}
 
@@ -168,13 +174,18 @@ func installFish(opts InstallOptions) error {
 		return fmt.Errorf("could not write %s: %w", compFile, err)
 	}
 
+	if opts.Verbose {
+		ui.Info("Wrote " + compFile)
+	}
+
 	ui.Success("Completion installed for fish")
 	ui.Info("Completions are active in all new fish sessions — no restart needed")
 	return nil
 }
 
-// detectShell reads $SHELL and returns the base name (bash, zsh, fish).
-func detectShell() string {
+// DetectShell reads $SHELL and returns the base name (bash, zsh, fish).
+// Exported so internal/alias can use it.
+func DetectShell() string {
 	s := os.Getenv("SHELL")
 	if s == "" {
 		return ""

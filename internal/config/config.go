@@ -47,13 +47,10 @@ func Load() (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(dir)
-
 	setDefaults(dir)
-
 	viper.AutomaticEnv()
 
 	if err := viper.ReadInConfig(); err != nil {
-		// Config file not found is fine — use defaults
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("error reading config: %w", err)
 		}
@@ -81,13 +78,36 @@ func Init() error {
 
 	cfgPath := filepath.Join(dir, "config.yaml")
 	if _, err := os.Stat(cfgPath); err == nil {
-		// Already exists
 		return nil
 	}
 
 	setDefaults(dir)
-
 	return viper.WriteConfigAs(cfgPath)
+}
+
+// SetAlias writes the alias field to ~/.unicli/config.yaml.
+func SetAlias(name string) error {
+	dir, err := Dir()
+	if err != nil {
+		return err
+	}
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	// Ensure config file exists before writing
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		if err := Init(); err != nil {
+			return err
+		}
+	}
+
+	viper.Set("alias", name)
+	return viper.WriteConfigAs(cfgPath)
+}
+
+// ClearAlias resets the alias field back to "unicli".
+func ClearAlias() error {
+	return SetAlias("unicli")
 }
 
 func setDefaults(dir string) {

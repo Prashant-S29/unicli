@@ -18,13 +18,44 @@ func SetRootCmd(cmd *cobra.Command) {
 }
 
 func generateZsh(w io.Writer) error {
-	return rootCmdRef.GenZshCompletion(w)
+	return generateZshForName("unicli", w)
 }
 
 func generateBash(w io.Writer) error {
-	return rootCmdRef.GenBashCompletion(w)
+	return generateBashForName("unicli", w)
 }
 
 func generateFish(w io.Writer) error {
-	return rootCmdRef.GenFishCompletion(w, true)
+	return generateFishForName("unicli", w)
+}
+
+// generateZshForName generates a zsh completion script that responds to name.
+func generateZshForName(name string, w io.Writer) error {
+	return withName(name, func() error {
+		return rootCmdRef.GenZshCompletion(w)
+	})
+}
+
+// generateBashForName generates a bash completion script that responds to name.
+func generateBashForName(name string, w io.Writer) error {
+	return withName(name, func() error {
+		return rootCmdRef.GenBashCompletion(w)
+	})
+}
+
+// generateFishForName generates a fish completion script that responds to name.
+func generateFishForName(name string, w io.Writer) error {
+	return withName(name, func() error {
+		return rootCmdRef.GenFishCompletion(w, true)
+	})
+}
+
+// withName temporarily sets the root command's Use field to name,
+// runs fn, then restores the original name.
+func withName(name string, fn func() error) error {
+	original := rootCmdRef.Use
+	rootCmdRef.Use = name
+	err := fn()
+	rootCmdRef.Use = original
+	return err
 }
