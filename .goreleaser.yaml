@@ -1,0 +1,96 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: unicli
+    main: ./main.go
+    binary: unicli
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: unicli
+    name_template: "unicli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE
+      - README.md
+      - completions/*
+      - scripts/install.sh
+
+checksum:
+  name_template: "unicli_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+brews:
+  - name: unicli
+    repository:
+      owner: prashant-s29
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/prashant-s29/unicli"
+    description: "A fast, modular CLI for everyday file and media operations"
+    license: "MIT"
+    install: |
+      bin.install "unicli"
+      bash_completion.install "completions/unicli.bash" => "unicli"
+      zsh_completion.install "completions/unicli.zsh" => "_unicli"
+      fish_completion.install "completions/unicli.fish"
+    test: |
+      system "#{bin}/unicli", "--version"
+    post_install: |
+      puts ""
+      puts "  unicli installed. Run `unicli setup` to download engines and configure your shell."
+      puts ""
+
+release:
+  github:
+    owner: prashant-s29
+    name: unicli
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+  footer: |
+    ## Install
+
+    **macOS (Homebrew)**
+    ```bash
+    brew install prashant-s29/tap/unicli
+    ```
+
+    **macOS / Linux**
+    ```bash
+    curl -sSL https://github.com/prashant-s29/unicli/releases/latest/download/install.sh | sh
+    ```
+
+    After installing, run `unicli setup` to finish configuration.
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
