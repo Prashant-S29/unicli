@@ -1,7 +1,7 @@
-# unicli — Architecture & Design Document
+# unicli - Architecture & Design Document
 
 > **Version:** 0.1.0-draft
-> **Status:** Active — this is the single source of truth for what we are building.
+> **Status:** Active - this is the single source of truth for what we are building.
 > Last updated: 2026-05-17
 
 ---
@@ -19,12 +19,12 @@
 9. [Configuration](#9-configuration)
 10. [Alias System](#10-alias-system)
 11. [Selfkill](#11-selfkill)
-12. [Image Module](#11-image-module) — Coming Soon
-13. [Video Module](#12-video-module) — Coming Soon
-14. [Audio Module](#13-audio-module) — Coming Soon
-15. [PDF Module](#14-pdf-module) — Coming Soon
-16. [Error Handling](#15-error-handling)
-17. [Distribution](#16-distribution)
+12. [Image Module](#12-image-module) - WIP
+13. [Video Module](#13-video-module) - Coming Soon
+14. [Audio Module](#14-audio-module) - Coming Soon
+15. [PDF Module](#15-pdf-module) - Coming Soon
+16. [Error Handling](#16-error-handling)
+17. [Distribution](#17-distribution)
 
 ---
 
@@ -32,10 +32,10 @@
 
 `unicli` is a fast, modular command-line tool for everyday file and media operations. The primary goals are:
 
-- **One tool, everything** — download from any platform, convert, compress, transform
-- **Great UX** — progress feedback, clear errors, shell autocomplete that actually works
-- **Performant** — single binary, fast startup, no runtime dependencies for the user
-- **Modular codebase** — each domain (download, image, video) is an isolated internal package
+- **One tool, everything** - download from any platform, convert, compress, transform
+- **Great UX** - progress feedback, clear errors, shell autocomplete that actually works
+- **Performant** - single binary, fast startup, no runtime dependencies for the user
+- **Modular codebase** - each domain (download, image, video) is an isolated internal package
 
 The first release covers two things only: `download` and the autocomplete infrastructure. Everything else is designed around this foundation.
 
@@ -64,7 +64,7 @@ We do not reinvent wheels. Heavy lifting is delegated to best-in-class external 
 | Direct file HTTP download | Go stdlib `net/http` |
 | Image/video processing | `ffmpeg` *(future modules)* |
 
-`unicli` is the interface layer — detection, routing, progress UI, and consistent error output. The engines do the actual work.
+`unicli` is the interface layer - detection, routing, progress UI, and consistent error output. The engines do the actual work.
 
 ### Fail loudly and clearly
 Errors are never swallowed. Every failure surfaces with:
@@ -88,7 +88,7 @@ Destructive operations (overwrite, in-place edit) always require an explicit fla
 | **yt-dlp wrapper** | `os/exec` | Shell out to yt-dlp binary, stream stdout/stderr |
 | **gallery-dl wrapper** | `os/exec` | Same pattern as yt-dlp |
 | **Progress UI** | [mpb](https://github.com/vbauerster/mpb) | Multi-bar concurrent progress, clean API |
-| **Terminal styling** | [lipgloss](https://github.com/charmbracelet/lipgloss) | Charm.sh's styling library — colors, layout, consistent look |
+| **Terminal styling** | [lipgloss](https://github.com/charmbracelet/lipgloss) | Charm.sh's styling library - colors, layout, consistent look |
 | **Autocomplete** | Cobra built-in + custom dynamic completions | No daemon needed. Go starts fast enough for TAB to feel instant |
 | **Build / release** | [goreleaser](https://goreleaser.com/) | Cross-platform binary builds, GitHub releases, Homebrew tap |
 
@@ -96,9 +96,9 @@ Destructive operations (overwrite, in-place edit) always require an explicit fla
 
 The extension/plugin system was the main reason to consider Node (npm as distribution). Without it, Go wins on every axis that matters for a CLI:
 
-- No daemon needed for autocomplete — Go binary starts in ~5ms vs Node's ~200-300ms
-- True single binary — users install one file, no node_modules, no runtime
-- Native concurrency via goroutines — parallel downloads with no callback complexity
+- No daemon needed for autocomplete - Go binary starts in ~5ms vs Node's ~200-300ms
+- True single binary - users install one file, no node_modules, no runtime
+- Native concurrency via goroutines - parallel downloads with no callback complexity
 - `goreleaser` makes cross-platform distribution trivial
 
 ---
@@ -108,7 +108,7 @@ The extension/plugin system was the main reason to consider Node (npm as distrib
 ```
 unicli/
 │
-├── main.go                      # Entry point — 5 lines, calls cmd.Execute()
+├── main.go                      # Entry point - 5 lines, calls cmd.Execute()
 ├── go.mod
 ├── go.sum
 │
@@ -116,24 +116,24 @@ unicli/
 │   ├── root.go                  # Root command, global flags (--verbose, --quiet, --dry-run)
 │   ├── setup.go                 # `unicli setup` command definition
 │   ├── download.go              # `unicli download` command definition
-│   ├── completion.go            # `unicli completion` — installs shell completion scripts
+│   ├── completion.go            # `unicli completion` - installs shell completion scripts
 │   └── alias.go                 # `unicli alias` command group
 │
-├── internal/                    # All domain logic — not importable externally
+├── internal/                    # All domain logic - not importable externally
 │   │
 │   ├── download/                # Download domain
-│   │   ├── download.go          # Orchestrator — ties detector + engine + progress together
+│   │   ├── download.go          # Orchestrator - ties detector + engine + progress together
 │   │   ├── detector.go          # URL → Platform detection
 │   │   ├── engines/
 │   │   │   ├── engine.go        # Engine interface definition
-│   │   │   ├── manager.go       # Engine lifecycle — resolve, download, verify, store
+│   │   │   ├── manager.go       # Engine lifecycle - resolve, download, verify, store
 │   │   │   ├── ytdlp.go         # yt-dlp engine
 │   │   │   ├── gallerydl.go     # gallery-dl engine
 │   │   │   └── http.go          # Direct HTTP download engine
 │   │   └── progress.go          # Unified progress bar UI for download
 │   │
 │   ├── setup/
-│   │   └── setup.go             # Setup orchestration — calls engine manager, completions, config init
+│   │   └── setup.go             # Setup orchestration - calls engine manager, completions, config init
 │   │
 │   ├── config/
 │   │   └── config.go            # Load/save ~/.unicli/config.yaml via Viper
@@ -204,7 +204,7 @@ unicli
 ### 6.1 Command interface
 
 ```bash
-unicli setup              # first-time setup — download all required engines
+unicli setup              # first-time setup - download all required engines
 unicli setup --update     # re-download latest versions of all engines
 ```
 
@@ -218,8 +218,8 @@ $ unicli setup
   unicli needs a few dependencies to work.
   The following will be downloaded and saved to ~/.unicli/bin/
 
-    • yt-dlp      (media downloader — YouTube, Instagram, Twitter/X and 1000+ sites)
-    • gallery-dl  (image gallery downloader — Pixiv, DeviantArt, Danbooru and more)
+    • yt-dlp      (media downloader - YouTube, Instagram, Twitter/X and 1000+ sites)
+    • gallery-dl  (image gallery downloader - Pixiv, DeviantArt, Danbooru and more)
 
   Press Enter to continue, or Ctrl+C to cancel.
 
@@ -263,7 +263,7 @@ $ unicli setup --update
 
 ### 6.4 Inline prompt (skipped setup)
 
-If a user runs a command that needs an engine before running `unicli setup`, they are not hard-failed — they are prompted inline and setup runs immediately:
+If a user runs a command that needs an engine before running `unicli setup`, they are not hard-failed - they are prompted inline and setup runs immediately:
 
 ```
 $ unicli download https://youtube.com/watch?v=...
@@ -284,11 +284,11 @@ $ unicli download https://youtube.com/watch?v=...
 
 All engine lifecycle logic lives here:
 
-- **Resolve** — check `~/.unicli/bin/<engine>` first, then `$PATH`, then prompt to install
-- **Download** — fetch the correct platform build from the engine's official GitHub releases
-- **Verify** — SHA256 checksum verified against the release's published hash before use
-- **Store** — saved to `~/.unicli/bin/`, marked executable
-- **Path injection** — `~/.unicli/bin/` is prepended to the subprocess `PATH` on every engine call so managed binaries are always preferred over any system version
+- **Resolve** - check `~/.unicli/bin/<engine>` first, then `$PATH`, then prompt to install
+- **Download** - fetch the correct platform build from the engine's official GitHub releases
+- **Verify** - SHA256 checksum verified against the release's published hash before use
+- **Store** - saved to `~/.unicli/bin/`, marked executable
+- **Path injection** - `~/.unicli/bin/` is prepended to the subprocess `PATH` on every engine call so managed binaries are always preferred over any system version
 
 ### 6.6 Supported engines
 
@@ -385,7 +385,7 @@ const (
 )
 ```
 
-Detection order matters — more specific patterns are matched first:
+Detection order matters - more specific patterns are matched first:
 1. Known gallery platforms → `gallery-dl` engine
 2. Known video/media platforms → `yt-dlp` engine
 3. URL ends in a known file extension → `http` engine
@@ -431,7 +431,7 @@ type ProgressUpdate struct {
 ### 7.5 yt-dlp engine (`engines/ytdlp.go`)
 
 - Shells out to the `yt-dlp` binary via `os/exec`
-- Binary is resolved via engine manager (see §6.5) — never assumes system PATH alone
+- Binary is resolved via engine manager (see §6.5) - never assumes system PATH alone
 - Parses yt-dlp's `--progress-template` JSON output to feed the `ProgressFunc`
 - Maps unicli flags to yt-dlp args:
 
@@ -465,13 +465,13 @@ Uses `mpb` for multi-bar rendering. A single download shows:
   ████████████████████░░░░░░░░░░  62%  45.2 MB / 73.1 MB  ↓ 3.2 MB/s  ETA 8s
 ```
 
-Multiple concurrent downloads (future) show stacked bars. The progress layer is fully decoupled from engines — it only receives `ProgressUpdate` structs.
+Multiple concurrent downloads (future) show stacked bars. The progress layer is fully decoupled from engines - it only receives `ProgressUpdate` structs.
 
 ### 7.9 Pre-flight checks
 
 Before any download starts, unicli verifies:
 
-1. Required engine binary is available — resolved via engine manager (§6.5), inline install prompt if missing
+1. Required engine binary is available - resolved via engine manager (§6.5), inline install prompt if missing
 2. Output directory exists or can be created
 3. Sufficient disk space (best-effort, based on `Content-Length` or yt-dlp metadata)
 4. URL is reachable (HEAD request with 5s timeout)
@@ -482,7 +482,7 @@ Before any download starts, unicli verifies:
 
 ### How it works
 
-Go binaries start in ~5ms. No daemon is needed — the shell spawns the binary on every TAB press and it exits immediately with completions.
+Go binaries start in ~5ms. No daemon is needed - the shell spawns the binary on every TAB press and it exits immediately with completions.
 
 Cobra handles the mechanics. We add custom dynamic completion functions for context-sensitive cases.
 
@@ -542,7 +542,7 @@ engines:
   gallerydl_path: ""      # override gallery-dl binary path (skips managed bin)
 ```
 
-Config values are the lowest priority — CLI flags always win over config, config always wins over built-in defaults.
+Config values are the lowest priority - CLI flags always win over config, config always wins over built-in defaults.
 
 Priority order: `CLI flag > env var > config file > default`
 
@@ -558,7 +558,7 @@ unicli alias get            # prints current alias
 unicli alias reset          # removes alias, back to unicli only
 ```
 
-The binary inspects `os.Args[0]` at startup — it works correctly regardless of what name it was invoked as. Autocomplete scripts are re-generated for the alias name automatically.
+The binary inspects `os.Args[0]` at startup - it works correctly regardless of what name it was invoked as. Autocomplete scripts are re-generated for the alias name automatically.
 
 ---
 
@@ -588,17 +588,17 @@ unicli selfkill --yes    # skips confirmation prompt
 
 ### What does NOT get removed
 
-The `unicli` binary itself is not removed — a running process cannot reliably delete itself cross-platform. Instead, selfkill prints the exact command to run as its final step:
+The `unicli` binary itself is not removed - a running process cannot reliably delete itself cross-platform. Instead, selfkill prints the exact command to run as its final step:
 
 ```
-  One last step — remove the unicli binary itself:
+  One last step - remove the unicli binary itself:
 
     sudo rm /usr/local/bin/unicli
 ```
 ### Implementation
 
 - Reads the alias name from `~/.unicli/config.yaml` before deleting the directory
-- Shell detection is not needed — selfkill always cleans up all three shell locations regardless of which shell is active
+- Shell detection is not needed - selfkill always cleans up all three shell locations regardless of which shell is active
 - `$SHELL` is intentionally not consulted here; unlike setup, teardown should be exhaustive
 
 
@@ -606,10 +606,146 @@ The `unicli` binary itself is not removed — a running process cannot reliably 
 
 ## 12. Image Module
 
-> **Coming Soon.** Architecture will be defined before implementation begins.
->
-> Planned actions: `compress`, `convert`, `resize`
-> Engine: `ffmpeg` wrapper
+### 12.1 Overview
+
+The image module is a modular set of operations on image files. Each operation group
+is its own sub-milestone (M9a, M9b, ...). All transform operations are handled by
+ffmpeg. Text-to-image creation (M9z) uses ImageMagick as a second managed engine.
+
+Command grammar follows the existing noun → verb → target → flags pattern:
+
+    unicli image <action> [target] [flags]
+
+### 12.2 Supported Formats
+
+ffmpeg-only. No patchy or platform-dependent formats shipped.
+
+    Input / Output: jpeg, jpg, png, webp, bmp, tiff, gif, avif
+
+Any file in an unsupported format encountered during a batch operation is skipped
+(not errored). The skip is reported at the end with a reason. The overall operation
+is never aborted because of an unsupported format.
+
+### 12.3 Batch behavior (all image commands)
+
+- Target defaults to current directory if omitted
+- Accepts: single file, multiple files, directory, glob
+- --from <fmt>     Filter by input format. Comma-separated. e.g. --from png,jpg
+- --recursive      Also process images in subdirectories. Off by default.
+- Batch ops (more than one file) without --yes show a dry-run summary and prompt
+- --dry-run        Show what would happen, never execute
+- --replace        Overwrite originals in place (destructive, explicit opt-in)
+- -o, --output     Output file (single) or directory (batch)
+- Default output   Non-destructive - output sits alongside original with new extension
+
+### 12.4 Batch result output format
+
+    ✓  photo.png        →  photo.webp
+    ✓  banner.jpg       →  banner.webp
+    ⊘  profile.heic     →  skipped  (heic not supported)
+    ✗  corrupt.jpg      →  failed   (not a valid image)
+
+    Done. 2 converted, 1 skipped, 1 failed.
+
+### 12.5 Convert (M9a)
+
+    unicli image convert [target] --to <format> [flags]
+
+Converts images from one format to another. target defaults to current directory.
+
+Flags:
+  --to <format>     Required. Output format.
+  --from <fmt>      Only process files of this type. Comma-separated.
+  -o, --output      Output file or directory.
+  --replace         Overwrite originals. Conflicts with -o.
+  --recursive       Include subdirectories.
+
+Autocomplete:
+  --to and --from complete from the supported format list defined in
+  detector.go. The completion functions source from the same constant
+  used for runtime validation — one source of truth.
+
+Edge cases:
+  - Same input and output format: warn and skip that file, continue batch
+  - --replace and -o together: hard error before anything runs
+  - No images found: info message, exit 0
+
+### 12.6 Info (M9a)
+
+    unicli image info <target> [--all]
+
+Reads and displays image metadata via ffprobe (ships with ffmpeg).
+target can be a single file, multiple files, or a directory.
+
+Basic (default):
+
+    unicli image info profile.webp
+
+    File      profile.webp
+    Format    WebP
+    Size      1920 × 1080
+    Filesize  234 KB
+    Color     YUV (yuv420p)
+
+Full (--all):
+
+    unicli image info profile.webp --all
+
+Everything ffprobe exposes: format, codec details, color space, pixel format,
+bit depth, all EXIF fields (camera make/model, GPS coordinates, timestamp, lens
+info, exposure, ISO), creation time, all embedded metadata streams. Formatted
+where ffprobe gives structured data, raw where it does not.
+
+Multi-file: per-file blocks displayed sequentially, visually separated.
+Unsupported formats: skipped with reason, reported at end.
+
+### 12.7 Planned sub-milestones
+
+| ID   | Operation group              | Status       |
+|------|------------------------------|--------------|
+| M9a  | convert, info                | Defined      |
+| M9b  | compress                     | Coming soon  |
+| M9c  | resize, crop                 | Coming soon  |
+| M9d  | rotate, flip, strip          | Coming soon  |
+| M9z  | image create (ImageMagick)   | Coming soon  |
+
+M9z is intentionally last - it introduces a second managed engine (ImageMagick)
+and is generative rather than transformative. Architecture will be defined before
+implementation begins.
+
+### 12.8 Repository additions
+
+    cmd/
+    └── image.go                  # full image command tree
+
+    internal/
+    └── image/
+        ├── image.go              # orchestrator
+        ├── detector.go           # file type detection and validation
+        ├── engines/
+        │   ├── engine.go         # Engine interface for image ops
+        │   └── ffmpeg.go         # all M9a–M9d operations
+        └── progress.go           # batch progress and result reporting
+
+### 12.9 Autocomplete
+
+All image subcommands and their flags are fully tab-completable.
+
+Static (Cobra built-in, works from M9a):
+    unicli image <TAB>            →  convert  info
+    unicli image convert <TAB>    →  --to  --from  --output  --replace  --recursive
+    unicli image info <TAB>       →  --all
+
+Dynamic (registered per flag, M9a):
+    unicli image convert --to <TAB>      →  jpeg  png  webp  bmp  tiff  gif  avif
+    unicli image convert --from <TAB>    →  jpeg  png  webp  bmp  tiff  gif  avif
+    unicli image info --to <TAB>         →  jpeg  png  webp  bmp  tiff  gif  avif
+
+As each sub-milestone lands, its new subcommand and flags are added to the
+static tree automatically via Cobra, and dynamic completions are registered
+in cmd/image.go alongside the flag definitions. The supported format list
+never diverges between runtime and autocomplete — both source from
+internal/image/detector.go.
 
 ---
 
@@ -646,7 +782,7 @@ All errors follow a consistent format in the terminal:
 
 ```
 ✗  Failed to download
-   Reason:  yt-dlp could not extract video info — video may be private or geo-blocked
+   Reason:  yt-dlp could not extract video info - video may be private or geo-blocked
    URL:     https://youtube.com/watch?v=...
    Fix:     Try with --verbose to see full yt-dlp output
 ```
