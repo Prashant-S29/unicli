@@ -1,6 +1,7 @@
 package engines
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -14,12 +15,12 @@ import (
 // ffmpegEngine implements Engine using ffprobe for reads and ffmpeg for writes.
 type ffmpegEngine struct {
 	ffprobePath string
+	ffmpegPath  string
 }
 
 // NewFFmpegEngine resolves the ffprobe binary and returns a ready engine.
 // Returns (nil, false, nil) if the binary is not installed.
 func NewFFmpegEngine(binDir string) (Engine, bool, error) {
-	// ffprobe ships alongside ffmpeg — resolve it the same way.
 	path, managed, err := mgr.Resolve(mgr.EngineFFmpeg, binDir)
 	if err != nil {
 		return nil, false, err
@@ -28,10 +29,12 @@ func NewFFmpegEngine(binDir string) (Engine, bool, error) {
 		return nil, false, nil
 	}
 
-	// The managed binary is named "ffmpeg". ffprobe sits next to it.
 	ffprobePath := deriveFfprobePath(path)
 
-	return &ffmpegEngine{ffprobePath: ffprobePath}, managed, nil
+	return &ffmpegEngine{
+		ffprobePath: ffprobePath,
+		ffmpegPath:  path,
+	}, managed, nil
 }
 
 func (e *ffmpegEngine) Name() string { return mgr.EngineFFmpeg }
@@ -49,16 +52,72 @@ func (e *ffmpegEngine) Info(file string, full bool) (*ImageInfo, error) {
 	cmd := exec.Command(e.ffprobePath, args...)
 	out, err := cmd.Output()
 	if err != nil {
-		// ffprobe exits non-zero for unreadable files
 		return nil, fmt.Errorf("ffprobe failed: %w", err)
 	}
 
 	return parseFFprobeOutput(file, out, full)
 }
 
+// ---- Convert -------------------------------------------------------------
+
+// codecFlag maps a lowercase target format to the ffmpeg codec/encoder flag
+// value passed via -vcodec. Formats not in this map are unsupported.
+var codecFlag = map[string]string{
+	"jpeg": "mjpeg",
+	"jpg":  "mjpeg",
+	"png":  "png",
+	"webp": "libwebp",
+	"bmp":  "bmp",
+	"tiff": "tiff",
+	"gif":  "gif",
+	"avif": "libaom-av1",
+}
+
+// Convert transcodes a single image file using ffmpeg.
+// Calls fn exactly once when the operation finishes (success or failure).
+func (e *ffmpegEngine) Convert(ctx context.Context, req ConvertRequest, fn ProgressFunc) error {
+	codec, ok := codecFlag[strings.ToLower(req.ToFormat)]
+	if !ok {
+		err := fmt.Errorf("unsupported output format: %s", req.ToFormat)
+		fn(ConvertResult{InputPath: req.InputPath, OutputPath: req.OutputPath, Err: err})
+		return err
+	}
+
+	args := []string{
+		"-y", // overwrite output without prompting
+		"-i", req.InputPath,
+		"-vcodec", codec,
+		"-vframes", "1", // images are single-frame; avoids multi-frame confusion
+		req.OutputPath,
+	}
+
+	cmd := exec.CommandContext(ctx, e.ffmpegPath, args...)
+
+	// ffmpeg writes all its chatter to stderr. Capture it so we can surface
+	// it on failure without polluting stdout during normal operation.
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		wrapped := fmt.Errorf("ffmpeg failed: %w\n%s", err, trimFFmpegOutput(out))
+		fn(ConvertResult{InputPath: req.InputPath, OutputPath: req.OutputPath, Err: wrapped})
+		return wrapped
+	}
+
+	fn(ConvertResult{InputPath: req.InputPath, OutputPath: req.OutputPath, Err: nil})
+	return nil
+}
+
+// trimFFmpegOutput keeps only the last 5 lines of ffmpeg stderr output.
+// ffmpeg is very chatty; the error is always at the bottom.
+func trimFFmpegOutput(b []byte) string {
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) > 5 {
+		lines = lines[len(lines)-5:]
+	}
+	return strings.Join(lines, "\n")
+}
+
 // ---- ffprobe JSON parsing ------------------------------------------------
 
-// ffprobeOutput mirrors the JSON structure ffprobe emits.
 type ffprobeOutput struct {
 	Streams []ffprobeStream `json:"streams"`
 	Format  ffprobeFormat   `json:"format"`
@@ -88,7 +147,6 @@ func parseFFprobeOutput(file string, data []byte, full bool) (*ImageInfo, error)
 		return nil, fmt.Errorf("could not parse ffprobe output: %w", err)
 	}
 
-	// Find the video/image stream
 	var stream *ffprobeStream
 	for i := range probe.Streams {
 		if probe.Streams[i].CodecType == "video" {
@@ -100,13 +158,11 @@ func parseFFprobeOutput(file string, data []byte, full bool) (*ImageInfo, error)
 		return nil, fmt.Errorf("no image stream found in %s", file)
 	}
 
-	// Filesize
 	var filesize int64
 	if probe.Format.Size != "" {
 		filesize, _ = strconv.ParseInt(probe.Format.Size, 10, 64)
 	}
 
-	// Bit depth
 	bitDepth := 0
 	if stream.BitsPerRawSample != "" && stream.BitsPerRawSample != "0" {
 		bitDepth, _ = strconv.Atoi(stream.BitsPerRawSample)
@@ -123,15 +179,11 @@ func parseFFprobeOutput(file string, data []byte, full bool) (*ImageInfo, error)
 	}
 
 	if full {
-		// Build the raw map from the full ffprobe output for --all display.
-		// We unmarshal into a generic map so the presenter can iterate all keys.
 		var raw map[string]interface{}
 		if err := json.Unmarshal(data, &raw); err == nil {
 			info.Raw = raw
 		}
 
-		// Also fold EXIF tags from both stream and format into a flat tags map
-		// so the presenter doesn't need to know the ffprobe structure.
 		tags := make(map[string]string)
 		for k, v := range probe.Format.Tags {
 			tags[k] = v
@@ -140,7 +192,6 @@ func parseFFprobeOutput(file string, data []byte, full bool) (*ImageInfo, error)
 			tags[k] = v
 		}
 		if len(tags) > 0 {
-			// Inject flattened tags back into raw for the presenter
 			info.Raw["_tags"] = tags
 		}
 	}
@@ -148,7 +199,6 @@ func parseFFprobeOutput(file string, data []byte, full bool) (*ImageInfo, error)
 	return info, nil
 }
 
-// formatName converts ffprobe's internal codec/format names to a display name.
 func formatName(codecName, formatName string) string {
 	switch codecName {
 	case "mjpeg", "jpeg":
@@ -166,20 +216,15 @@ func formatName(codecName, formatName string) string {
 	case "av1", "avif":
 		return "AVIF"
 	}
-	// Fall back to format_name, uppercased
 	if formatName != "" {
 		return strings.ToUpper(strings.Split(formatName, ",")[0])
 	}
 	return strings.ToUpper(codecName)
 }
 
-// deriveFfprobePath infers the ffprobe binary path from the ffmpeg binary path.
-// They always ship together in the same directory.
 func deriveFfprobePath(ffmpegPath string) string {
-	// Replace the binary name, preserve directory and any .exe suffix
 	dir := ffmpegPath[:strings.LastIndex(ffmpegPath, "/")+1]
 	if strings.Contains(ffmpegPath, "\\") {
-		// Windows path
 		dir = ffmpegPath[:strings.LastIndex(ffmpegPath, "\\")+1]
 		return dir + "ffprobe.exe"
 	}
@@ -189,7 +234,6 @@ func deriveFfprobePath(ffmpegPath string) string {
 	return dir + "ffprobe"
 }
 
-// HumanSize formats bytes into a human-readable string.
 func HumanSize(bytes int64) string {
 	if bytes <= 0 {
 		return "unknown"
@@ -204,7 +248,6 @@ func HumanSize(bytes int64) string {
 	if i == 0 {
 		return fmt.Sprintf("%d B", bytes)
 	}
-	// Round to 1 decimal
 	rounded := math.Round(size*10) / 10
 	return fmt.Sprintf("%.1f %s", rounded, units[i])
 }

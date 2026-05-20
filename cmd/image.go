@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/prashant-s29/unicli/internal/image"
 	"github.com/prashant-s29/unicli/internal/ui"
 	"github.com/spf13/cobra"
@@ -15,7 +18,7 @@ var imageCmd = &cobra.Command{
 
 Available commands:
   info      Show image metadata and technical details
-  convert   Convert images between formats (coming in M9a)
+  convert   Convert images between formats
 
 Run 'unicli image <command> --help' for details on each command.`,
 }
@@ -57,17 +60,86 @@ Examples:
 	},
 }
 
+// ---- image convert -------------------------------------------------------
+
+var (
+	imageConvertTo        string
+	imageConvertFrom      string
+	imageConvertOutput    string
+	imageConvertReplace   bool
+	imageConvertRecursive bool
+)
+
+var imageConvertCmd = &cobra.Command{
+	Use:   "convert [target]",
+	Short: "Convert images between formats",
+	Long: `Convert one or more images to a different format.
+
+target can be a file, directory, or glob. Defaults to the current directory.
+
+Examples:
+  unicli image convert photo.png --to webp
+  unicli image convert ./assets --to webp
+  unicli image convert ./assets --from png,jpg --to webp
+  unicli image convert ./assets --to webp --recursive
+  unicli image convert ./assets --to webp -o ./out
+  unicli image convert ./assets --to webp --replace
+  unicli image convert ./assets --to webp --dry-run`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if imageConvertTo == "" {
+			return fmt.Errorf("--to is required")
+		}
+
+		var fromFormats []string
+		if imageConvertFrom != "" {
+			for _, f := range strings.Split(imageConvertFrom, ",") {
+				f = strings.TrimSpace(f)
+				if f != "" {
+					fromFormats = append(fromFormats, f)
+				}
+			}
+		}
+
+		err := image.RunConvert(image.ConvertRequest{
+			Targets:     args,
+			ToFormat:    imageConvertTo,
+			FromFormats: fromFormats,
+			OutputDir:   imageConvertOutput,
+			Replace:     imageConvertReplace,
+			Recursive:   imageConvertRecursive,
+			DryRun:      DryRun,
+			Yes:         Yes,
+			Quiet:       Quiet,
+			Verbose:     Verbose,
+		})
+		if err != nil {
+			ui.Error("image convert failed", err.Error(), "try --verbose for more detail")
+			return err
+		}
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(imageCmd)
 
-	// info subcommand
+	// info
 	imageCmd.AddCommand(imageInfoCmd)
 	imageInfoCmd.Flags().BoolVar(&imageInfoAll, "all", false, "show all metadata including EXIF")
 
-	// Static completions for image subcommands are handled automatically
-	// by Cobra from the registered command tree.
-	//
-	// Dynamic completions — format lists source from image.SupportedFormats
-	// and are registered here so they're available as soon as cmd/image.go loads.
-	// Convert flags (--to, --from) will be registered here when M9a convert lands.
+	// convert
+	imageCmd.AddCommand(imageConvertCmd)
+	imageConvertCmd.Flags().StringVar(&imageConvertTo, "to", "", "output format (required)")
+	imageConvertCmd.Flags().StringVar(&imageConvertFrom, "from", "", "only convert files of this format, comma-separated")
+	imageConvertCmd.Flags().StringVarP(&imageConvertOutput, "output", "o", "", "output file or directory")
+	imageConvertCmd.Flags().BoolVar(&imageConvertReplace, "replace", false, "overwrite originals in place")
+	imageConvertCmd.Flags().BoolVar(&imageConvertRecursive, "recursive", false, "include subdirectories")
+
+	// dynamic completions
+	imageConvertCmd.RegisterFlagCompletionFunc("to", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return image.SupportedFormats, cobra.ShellCompDirectiveNoFileComp
+	})
+	imageConvertCmd.RegisterFlagCompletionFunc("from", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return image.SupportedFormats, cobra.ShellCompDirectiveNoFileComp
+	})
 }
