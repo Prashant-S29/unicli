@@ -1,7 +1,8 @@
-// Copyright © 2026 Prashant Singh
 package engines
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/ulikunitz/xz"
 )
 
 // httpClient is shared across all manager operations.
@@ -20,6 +23,13 @@ var httpClient = &http.Client{Timeout: 30 * time.Minute}
 
 // headClient is used only for quick metadata fetches — short timeout.
 var headClient = &http.Client{Timeout: 15 * time.Second}
+
+// archiveBinaries maps engine names to the binary filenames to extract from
+// their release archives. ffmpeg ships both ffmpeg and ffprobe in the same
+// archive — we need both.
+var archiveBinaries = map[string][]string{
+	EngineFFmpeg: {"ffmpeg", "ffprobe"},
+}
 
 // ---- Public API ----------------------------------------------------------
 
@@ -74,34 +84,41 @@ func Install(engineName, binDir string, progress DownloadProgress) error {
 		return fmt.Errorf("%s: asset not found in release %s: %w", engineName, release.TagName, err)
 	}
 
-	// Download the binary to a temp file first
 	if err := os.MkdirAll(binDir, 0755); err != nil {
 		return fmt.Errorf("could not create bin directory: %w", err)
 	}
 
 	tmpPath := filepath.Join(binDir, "."+engineName+".tmp")
-	defer os.Remove(tmpPath) // clean up on any failure path
+	defer os.Remove(tmpPath)
 
 	if err := downloadFile(downloadURL, tmpPath, progress); err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
 
-	// Verify SHA256 against the release's checksum file (if available).
-	// For yt-dlp this is SHA2-256SUMS; for gallery-dl there's no published hash
-	// file — we skip verification and rely on HTTPS + GitHub's integrity.
+	// Verify SHA256 against the release's checksum file (yt-dlp only).
+	// For gallery-dl and ffmpeg there's no published hash file — we rely on
+	// HTTPS + GitHub's integrity.
 	if engineName == EngineYtDlp {
 		if err := verifyYtDlpChecksum(release, assetName, tmpPath); err != nil {
 			return fmt.Errorf("checksum verification failed: %w", err)
 		}
 	}
 
-	// Move temp file to final destination
+	// If this engine ships as an archive, extract the binaries from it.
+	// Otherwise treat the downloaded file as the binary itself.
+	if binNames, isArchive := archiveBinaries[engineName]; isArchive {
+		if err := extractArchive(tmpPath, assetName, binDir, binNames, goos); err != nil {
+			return fmt.Errorf("extraction failed: %w", err)
+		}
+		// tmpPath is the archive — defer already removes it.
+		return nil
+	}
+
+	// Single-binary path (yt-dlp, gallery-dl): move temp file into place.
 	finalPath := filepath.Join(binDir, binaryFilename(engineName))
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		return fmt.Errorf("could not install binary: %w", err)
 	}
-
-	// Mark executable
 	if err := os.Chmod(finalPath, 0755); err != nil {
 		return fmt.Errorf("could not set executable bit: %w", err)
 	}
@@ -136,6 +153,153 @@ func LatestVersion(engineName string) (string, error) {
 	}
 
 	return release.TagName, nil
+}
+
+// ---- Archive extraction --------------------------------------------------
+
+// extractArchive unpacks binNames out of the archive at archivePath into binDir.
+// Supports .tar.xz (linux ffmpeg) and .zip (windows ffmpeg).
+func extractArchive(archivePath, assetName, binDir string, binNames []string, goos string) error {
+	switch {
+	case strings.HasSuffix(assetName, ".tar.xz"):
+		return extractTarXz(archivePath, binDir, binNames, goos)
+	case strings.HasSuffix(assetName, ".zip"):
+		return extractZip(archivePath, binDir, binNames, goos)
+	default:
+		return fmt.Errorf("unsupported archive format: %s", assetName)
+	}
+}
+
+// extractTarXz extracts binNames from a .tar.xz archive into binDir.
+// The BtbN ffmpeg archive layout is:
+//
+//	ffmpeg-master-latest-linux64-gpl/bin/ffmpeg
+//	ffmpeg-master-latest-linux64-gpl/bin/ffprobe
+//
+// We match only on the base filename, so the directory structure doesn't matter.
+func extractTarXz(archivePath, binDir string, binNames []string, goos string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("could not open archive: %w", err)
+	}
+	defer f.Close()
+
+	xzReader, err := xz.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("could not read xz stream: %w", err)
+	}
+
+	return extractFromTar(tar.NewReader(xzReader), binDir, binNames, goos)
+}
+
+// extractZip extracts binNames from a .zip archive into binDir.
+func extractZip(archivePath, binDir string, binNames []string, goos string) error {
+	r, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return fmt.Errorf("could not open zip archive: %w", err)
+	}
+	defer r.Close()
+
+	want := makeWantSet(binNames, goos)
+	found := make(map[string]bool)
+
+	for _, f := range r.File {
+		base := filepath.Base(f.Name)
+		targetName, ok := want[base]
+		if !ok {
+			continue
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("could not open zip entry %s: %w", f.Name, err)
+		}
+
+		if err := writeFile(rc, filepath.Join(binDir, targetName)); err != nil {
+			rc.Close()
+			return fmt.Errorf("could not write %s: %w", targetName, err)
+		}
+		rc.Close()
+		found[targetName] = true
+	}
+
+	return checkAllFound(want, found)
+}
+
+// extractFromTar walks a tar stream and writes any entry whose base name is in
+// binNames into binDir.
+func extractFromTar(tr *tar.Reader, binDir string, binNames []string, goos string) error {
+	want := makeWantSet(binNames, goos)
+	found := make(map[string]bool)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("error reading tar: %w", err)
+		}
+
+		base := filepath.Base(hdr.Name)
+		targetName, ok := want[base]
+		if !ok {
+			continue
+		}
+
+		if err := writeFile(tr, filepath.Join(binDir, targetName)); err != nil {
+			return fmt.Errorf("could not write %s: %w", targetName, err)
+		}
+		found[targetName] = true
+	}
+
+	return checkAllFound(want, found)
+}
+
+// makeWantSet builds { archiveBasename -> destFilename } for the binaries we
+// want. On Windows the basenames carry a .exe suffix.
+func makeWantSet(binNames []string, goos string) map[string]string {
+	want := make(map[string]string, len(binNames))
+	for _, name := range binNames {
+		archiveName := name
+		destName := name
+		if goos == "windows" {
+			archiveName = name + ".exe"
+			destName = name + ".exe"
+		}
+		want[archiveName] = destName
+	}
+	return want
+}
+
+// writeFile streams src into a new file at destPath and marks it executable.
+func writeFile(src io.Reader, destPath string) error {
+	out, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, src); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Chmod(destPath, 0755)
+}
+
+// checkAllFound returns an error listing binaries not found in the archive.
+func checkAllFound(want map[string]string, found map[string]bool) error {
+	var missing []string
+	for _, dest := range want {
+		if !found[dest] {
+			missing = append(missing, dest)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("archive did not contain: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // ---- GitHub release helpers ----------------------------------------------
@@ -206,9 +370,9 @@ func downloadFile(url, destPath string, progress DownloadProgress) error {
 	}
 	defer out.Close()
 
-	total := resp.ContentLength // -1 if unknown
+	total := resp.ContentLength
 	var done int64
-	buf := make([]byte, 32*1024) // 32 KB chunks
+	buf := make([]byte, 32*1024)
 
 	for {
 		n, readErr := resp.Body.Read(buf)
@@ -232,10 +396,7 @@ func downloadFile(url, destPath string, progress DownloadProgress) error {
 	return nil
 }
 
-// verifyYtDlpChecksum fetches the SHA2-256SUMS file from the same release
-// and verifies that our downloaded binary matches.
 func verifyYtDlpChecksum(release *githubRelease, assetName, filePath string) error {
-	// Find the checksum asset
 	checksumAssetName := "SHA2-256SUMS"
 	checksumURL := ""
 	for _, a := range release.Assets {
@@ -245,7 +406,6 @@ func verifyYtDlpChecksum(release *githubRelease, assetName, filePath string) err
 		}
 	}
 	if checksumURL == "" {
-		// No checksum file in this release — skip silently
 		return nil
 	}
 
@@ -260,7 +420,6 @@ func verifyYtDlpChecksum(release *githubRelease, assetName, filePath string) err
 		return fmt.Errorf("could not read checksums: %w", err)
 	}
 
-	// Format: "<hash>  <filename>" one per line
 	expectedHash := ""
 	for _, line := range strings.Split(string(body), "\n") {
 		parts := strings.Fields(line)
@@ -270,11 +429,9 @@ func verifyYtDlpChecksum(release *githubRelease, assetName, filePath string) err
 		}
 	}
 	if expectedHash == "" {
-		// Asset not listed in checksum file — skip
 		return nil
 	}
 
-	// Hash the downloaded file
 	f, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("could not open file for verification: %w", err)
@@ -297,8 +454,6 @@ func verifyYtDlpChecksum(release *githubRelease, assetName, filePath string) err
 // ---- Version reading -----------------------------------------------------
 
 func readVersion(_ string, binaryPath string) (string, error) {
-	// Both yt-dlp and gallery-dl support --version.
-	// runVersionCommand lives in exec.go to keep os/exec out of this file.
 	out, err := runVersionCommand(binaryPath)
 	if err != nil {
 		return "", err
@@ -308,8 +463,6 @@ func readVersion(_ string, binaryPath string) (string, error) {
 
 // ---- Filesystem helpers --------------------------------------------------
 
-// binaryFilename returns the filename used in the managed bin dir.
-// On Windows yt-dlp ships as .exe; we preserve that.
 func binaryFilename(engineName string) string {
 	goos, _ := CurrentPlatform()
 	if goos == "windows" {
@@ -318,13 +471,11 @@ func binaryFilename(engineName string) string {
 	return engineName
 }
 
-// isExecutable returns true if the path exists and is executable.
 func isExecutable(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
-	// On Windows, any file that exists is considered executable.
 	goos, _ := CurrentPlatform()
 	if goos == "windows" {
 		return !info.IsDir()
@@ -332,16 +483,13 @@ func isExecutable(path string) bool {
 	return info.Mode()&0111 != 0
 }
 
-// findInPath searches the directories in $PATH for the engine binary.
 func findInPath(engineName string) string {
-	// Use os.LookPath equivalent manually to keep import footprint low
 	pathEnv := os.Getenv("PATH")
 	for _, dir := range filepath.SplitList(pathEnv) {
 		candidate := filepath.Join(dir, engineName)
 		if isExecutable(candidate) {
 			return candidate
 		}
-		// Windows: also try .exe
 		goos, _ := CurrentPlatform()
 		if goos == "windows" {
 			candidateExe := candidate + ".exe"

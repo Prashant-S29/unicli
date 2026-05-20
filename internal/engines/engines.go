@@ -1,4 +1,3 @@
-// Copyright © 2026 Prashant Singh
 package engines
 
 import (
@@ -11,6 +10,7 @@ const (
 	EngineHTTP      = "http"
 	EngineYtDlp     = "yt-dlp"
 	EngineGalleryDl = "gallery-dl"
+	EngineFFmpeg    = "ffmpeg"
 )
 
 // Release API base URLs. Both GitHub and Codeberg (Gitea) expose compatible
@@ -52,15 +52,20 @@ var registry = []EngineInfo{
 		AssetName:      ytDlpAsset,
 	},
 	{
-		// gallery-dl moved primary development + releases to Codeberg from v1.32.0+.
-		// GitHub releases >= v1.32.0 contain only auto-generated source archives — no binaries.
-		// See: https://github.com/mikf/gallery-dl/issues/9374
 		Name:           EngineGalleryDl,
 		Description:    "image gallery downloader — Pixiv, DeviantArt, Danbooru and more",
 		RepoOwner:      "mikf",
 		RepoName:       "gallery-dl",
 		ReleaseAPIBase: codebergAPI,
 		AssetName:      galleryDlAsset,
+	},
+	{
+		Name:           EngineFFmpeg,
+		Description:    "image and video processing — convert, compress, resize and more",
+		RepoOwner:      "BtbN",
+		RepoName:       "FFmpeg-Builds",
+		ReleaseAPIBase: githubAPI,
+		AssetName:      ffmpegAsset,
 	},
 }
 
@@ -138,5 +143,33 @@ func galleryDlAsset(goos, goarch string) (string, error) {
 		)
 	default:
 		return "", fmt.Errorf("gallery-dl: unsupported platform %s/%s", goos, goarch)
+	}
+}
+
+// ffmpegAsset resolves the correct ffmpeg release binary archive name for the platform.
+// We use BtbN/FFmpeg-Builds which provides static builds for all platforms.
+//
+//	linux/amd64   -> ffmpeg-master-latest-linux64-gpl.tar.xz
+//	linux/arm64   -> ffmpeg-master-latest-linuxarm64-gpl.tar.xz
+//	darwin/amd64  -> ffmpeg-master-latest-macos64-gpl.zip  (via homebrew fallback)
+//	darwin/arm64  -> ffmpeg-master-latest-macos64-gpl.zip  (via homebrew fallback)
+//	windows/amd64 -> ffmpeg-master-latest-win64-gpl.zip
+//
+// Note: macOS builds are not provided by BtbN. On macOS we fall back to
+// instructing the user to install via Homebrew. This is handled in manager.go.
+func ffmpegAsset(goos, goarch string) (string, error) {
+	switch {
+	case goos == "linux" && goarch == "amd64":
+		return "ffmpeg-master-latest-linux64-gpl.tar.xz", nil
+	case goos == "linux" && goarch == "arm64":
+		return "ffmpeg-master-latest-linuxarm64-gpl.tar.xz", nil
+	case goos == "windows" && goarch == "amd64":
+		return "ffmpeg-master-latest-win64-gpl.zip", nil
+	case goos == "darwin":
+		return "", fmt.Errorf(
+			"ffmpeg: no managed binary for macOS — install via: brew install ffmpeg",
+		)
+	default:
+		return "", fmt.Errorf("ffmpeg: unsupported platform %s/%s", goos, goarch)
 	}
 }
